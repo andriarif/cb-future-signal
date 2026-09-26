@@ -13,7 +13,7 @@ const supabase = createClient(
 
 const ASSETS = (
   process.env.ASSETS ||
-  "USD/BRL,EUR/USD,GBP/USD,USD/JPY"
+  "EUR/USD,GBP/USD,USD/JPY"
 )
   .split(",")
   .map(x => x.trim())
@@ -29,32 +29,46 @@ function json(data, status = 200) {
 }
 
 async function getCandles(asset) {
-  const base = process.env.CANDLE_API_URL;
+  const key = process.env.OTCHARTS_API_KEY;
 
-  if (!base) {
-    throw new Error("CANDLE_API_URL belum diatur.");
+  if (!key) {
+    throw new Error("OTCHARTS_API_KEY belum diatur.");
   }
 
-  const url = new URL(base);
+  const symbol = asset.replace("/", "") + "_otc";
 
-  url.searchParams.set("pair", asset);
-  url.searchParams.set("timeframe", "1m");
+  const url = new URL("https://otcharts.com/v1/candles");
+
+  url.searchParams.set("venue", "otc");
+  url.searchParams.set("symbol", symbol);
+  url.searchParams.set("tf", "60");
   url.searchParams.set("limit", "250");
 
   const response = await fetch(url, {
     headers: {
-      "accept": "application/json"
+      accept: "application/json",
+      authorization: `Bearer ${key}`
     },
     cache: "no-store"
   });
 
   if (!response.ok) {
+    const body = await response.text();
+
     throw new Error(
-      `Candle API ${asset}: HTTP ${response.status}`
+      `OTCharts ${asset}: HTTP ${response.status} ${body}`
     );
   }
 
-  return response.json();
+  const data = await response.json();
+
+  if (!Array.isArray(data.candles)) {
+    throw new Error(
+      `OTCharts ${asset}: format candles tidak valid.`
+    );
+  }
+
+  return data.candles;
 }
 
 async function sendTelegram(message) {
@@ -85,6 +99,7 @@ async function sendTelegram(message) {
 
   if (!response.ok) {
     const body = await response.text();
+
     throw new Error(
       `Telegram HTTP ${response.status}: ${body}`
     );
@@ -101,7 +116,7 @@ async function processAsset(asset) {
     return {
       asset,
       status: "SKIP",
-      reason: "Candle M1 kurang dari 220"
+      reason: `Candle M1 hanya ${candles.length}, minimal 220`
     };
   }
 
