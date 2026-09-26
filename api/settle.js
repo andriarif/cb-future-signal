@@ -1,5 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
-import { normalizeCandles } from "../signal-engine.js";
+
+import {
+  normalizeCandles
+} from "../signal-engine.js";
+
 
 
 const supabase =
@@ -9,26 +13,56 @@ createClient(
 );
 
 
+
 const OTCHARTS_API_KEY =
 process.env.OTCHARTS_API_KEY;
+
 
 
 const EXPIRATION_MINUTES = 1;
 
 
 
-const ASSETS = [
- "EUR/USD",
- "GBP/USD",
- "USD/JPY",
- "AUD/USD"
-];
+// =================================
+// TELEGRAM RESULT
+// =================================
+
+async function sendTelegram(text){
+
+
+ await fetch(
+
+ `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
+
+ {
+
+ method:"POST",
+
+ headers:{
+  "Content-Type":
+  "application/json"
+ },
+
+ body:JSON.stringify({
+
+  chat_id:
+  process.env.TELEGRAM_CHAT_ID,
+
+  text
+
+ })
+
+ }
+
+ );
+
+}
 
 
 
-// ==================================
+// =================================
 // SYMBOL
-// ==================================
+// =================================
 
 function symbolFor(asset){
 
@@ -42,9 +76,9 @@ function symbolFor(asset){
 
 
 
-// ==================================
-// GET CANDLES M1
-// ==================================
+// =================================
+// GET CANDLE M1
+// =================================
 
 async function getCandles(asset){
 
@@ -66,10 +100,12 @@ async function getCandles(asset){
  await fetch(
   url,
   {
+
    headers:{
     Authorization:
     `Bearer ${OTCHARTS_API_KEY}`
    }
+
   }
  );
 
@@ -90,322 +126,362 @@ async function getCandles(asset){
 
 
 
-// ==================================
-// SETTLE
-// ==================================
+// =================================
+// API
+// =================================
 
 export default async function handler(
- req,
- res
+req,
+res
 ){
 
 
- const results=[];
+const results=[];
 
 
- try{
 
+try{
 
-  const {
-   data:signals,
-   error
-  } =
-  await supabase
-  .from("signals")
-  .select("*")
-  .eq(
-   "result",
-   "PENDING"
-  )
-  .order(
-   "entry_time",
-   {
-    ascending:true
-   }
-  );
 
+const {
+ data:signals,
+ error
+}
+=
+await supabase
+.from("signals")
+.select("*")
+.eq(
+"result",
+"PENDING"
+)
+.order(
+"entry_time",
+{
+ ascending:true
+}
+);
 
 
-  if(error)
-  throw error;
 
+if(error)
+throw error;
 
 
-  if(!signals || signals.length===0){
 
-   return res.status(200)
-   .json({
+if(!signals || signals.length===0){
 
-    ok:true,
+return res.status(200)
+.json({
 
-    checked:0,
+ ok:true,
 
-    results:[]
+ timeframe:"M1",
 
-   });
+ expirationMinutes:
+ EXPIRATION_MINUTES,
 
-  }
+ checked:0,
 
+ results:[]
 
+});
 
-  for(
-   const signal of signals
-  ){
+}
 
 
-   try{
 
+for(
+const signal of signals
+){
 
-    const now =
-    new Date();
 
+try{
 
 
-    const expiryTime =
-    new Date(
-     signal.expiry_time
-    );
+const now =
+new Date();
 
 
+const expiry =
+new Date(
+ signal.expiry_time
+);
 
-    // ==========================
-    // BELUM EXPIRY
-    // ==========================
 
-    if(
-     now < expiryTime
-    ){
 
+// ==========================
+// BELUM EXPIRY
+// ==========================
 
-     results.push({
+if(now < expiry){
 
-      id:
-      signal.id,
 
+results.push({
 
-      asset:
-      signal.asset,
+ id:
+ signal.id,
 
 
-      status:
-      "WAITING_EXPIRY",
+ asset:
+ signal.asset,
 
 
-      expiryTime:
-      expiryTime.toISOString()
+ status:
+ "WAITING_EXPIRY",
 
-     });
 
+ expiryTime:
+ expiry.toISOString()
 
-     continue;
+});
 
-    }
 
+continue;
 
+}
 
-    // ==========================
-    // AMBIL CANDLE HASIL
-    // ==========================
 
 
-    const raw =
-    await getCandles(
-     signal.asset
-    );
+// ==========================
+// AMBIL HASIL CANDLE
+// ==========================
 
 
-    const candles =
-    normalizeCandles(raw);
+const raw =
+await getCandles(
+ signal.asset
+);
 
 
 
-    if(candles.length===0){
+const candles =
+normalizeCandles(raw);
 
-     results.push({
 
-      id:
-      signal.id,
 
-      status:
-      "NO_CANDLE"
+if(candles.length===0){
 
-     });
+results.push({
 
-     continue;
+ id:
+ signal.id,
 
-    }
+ status:
+ "NO_CANDLE"
 
+});
 
 
-    const last =
-    candles[
-     candles.length-1
-    ];
+continue;
 
+}
 
 
-    const closePrice =
-    last.close;
 
+const last =
+candles[
+ candles.length-1
+];
 
 
-    let result;
 
+const closePrice =
+last.close;
 
 
-    if(
-     signal.direction==="CALL"
-    ){
 
-     result =
-     closePrice >
-     Number(signal.entry_price)
-     ?
-     "WIN"
-     :
-     "LOSS";
+let result;
 
-    }
-    else{
 
 
-     result =
-     closePrice <
-     Number(signal.entry_price)
-     ?
-     "WIN"
-     :
-     "LOSS";
+if(
+ signal.direction==="CALL"
+){
 
+ result =
+ closePrice >
+ Number(signal.entry_price)
+ ?
+ "WIN"
+ :
+ "LOSS";
 
-    }
+}
+else{
 
 
+ result =
+ closePrice <
+ Number(signal.entry_price)
+ ?
+ "WIN"
+ :
+ "LOSS";
 
-    await supabase
-    .from("signals")
-    .update({
+}
 
-     result,
 
 
-     result_price:
-     closePrice,
+// ==========================
+// UPDATE DATABASE
+// ==========================
 
 
-     result_time:
-     last.time.toISOString(),
+await supabase
+.from("signals")
+.update({
 
+ result,
 
-     settled_at:
-     new Date()
-     .toISOString()
+ result_price:
+ closePrice,
 
-    })
-    .eq(
-     "id",
-     signal.id
-    );
+ result_time:
+ last.time.toISOString(),
 
+ settled_at:
+ new Date().toISOString()
 
+})
+.eq(
+"id",
+signal.id
+);
 
-    results.push({
 
-     id:
-     signal.id,
 
+// ==========================
+// TELEGRAM RESULT
+// ==========================
 
-     asset:
-     signal.asset,
 
+await sendTelegram(
 
-     direction:
-     signal.direction,
+`📊 RESULT
 
 
-     entryPrice:
-     signal.entry_price,
+🌐 ${signal.asset} OTC
 
+Timeframe: M1
 
-     closePrice,
 
+Direction:
+${signal.direction==="CALL"?"BUY":"SELL"}
 
-     result,
 
+Entry:
+${signal.entry_price}
 
-     status:
-     "SETTLED"
 
-    });
+Close:
+${closePrice}
 
 
+${result==="WIN"?"✅ WIN":"❌ LOSS"}
 
-   }
-   catch(err){
 
+⏱ Expiration:
+1 minute`
 
-    results.push({
+);
 
-     asset:
-     signal.asset,
 
 
-     status:
-     "ERROR",
+results.push({
 
+ id:
+ signal.id,
 
-     error:
-     err.message
 
-    });
+ asset:
+ signal.asset,
 
 
-   }
+ direction:
+ signal.direction,
 
 
-  }
+ status:
+ "SETTLED",
 
 
+ result,
 
-  return res.status(200)
-  .json({
 
-   ok:true,
+ entryPrice:
+ signal.entry_price,
 
 
-   timeframe:
-   "M1",
+ closePrice
 
+});
 
-   expirationMinutes:
-   EXPIRATION_MINUTES,
 
 
-   checked:
-   signals.length,
+}
+catch(err){
 
 
-   results
+results.push({
 
-  });
+ id:
+ signal.id,
 
+ asset:
+ signal.asset,
 
+ status:
+ "ERROR",
 
- }
- catch(error){
+ error:
+ err.message
 
+});
 
-  return res.status(500)
-  .json({
 
-   ok:false,
+}
 
-   error:
-   error.message
 
-  });
+}
 
 
- }
+
+return res.status(200)
+.json({
+
+ ok:true,
+
+ timeframe:
+ "M1",
+
+ expirationMinutes:
+ EXPIRATION_MINUTES,
+
+ checked:
+ signals.length,
+
+ results
+
+});
+
+
+}
+catch(error){
+
+
+return res.status(500)
+.json({
+
+ ok:false,
+
+ error:
+ error.message
+
+});
+
+
+}
+
 
 }
