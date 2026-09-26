@@ -2,11 +2,13 @@
 // CB Future Signal - SIGNAL ONLY + ACTIVE SIGNAL LOCK FINAL
 // M1 EMA50 + RSI14 + Candle Confirmation
 //
+// FINAL VERSION:
 // - Scan 4 OTC pairs
 // - Select 1 best signal
-// - Lock only while active signal exists
+// - Active signal lock (no cooldown)
 // - Telegram IMAGE + CLEAN CAPTION
 // - No price / tick / win loss
+// - entry_price = 0
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -26,12 +28,14 @@ const TIMEFRAME = "M1";
 
 const EXPIRATION_MINUTES = 1;
 
+const ENTRY_DELAY_MINUTES = 2;
+
 const OTCHARTS_CORRECTION_MS =
     -2 * 60 * 60 * 1000;
 
 
 // ======================================================
-// OTC ASSETS
+// ASSETS
 // ======================================================
 
 const ASSETS = [
@@ -43,7 +47,7 @@ const ASSETS = [
 
 
 // ======================================================
-// TELEGRAM IMAGE
+// IMAGE
 // ======================================================
 
 const BUY_IMAGE_URL =
@@ -58,7 +62,8 @@ const SELL_IMAGE_URL =
 // SUPABASE
 // ======================================================
 
-const supabase = createClient(
+const supabase =
+createClient(
     process.env.SUPABASE_URL,
     process.env.SUPABASE_SERVICE_ROLE_KEY
 );
@@ -71,7 +76,8 @@ const supabase = createClient(
 function symbolFor(asset){
 
     return (
-        asset.replace("/","") +
+        asset.replace("/","")
+        +
         "_otc"
     );
 
@@ -87,7 +93,7 @@ function formatWIB(date){
     return new Intl.DateTimeFormat(
         "id-ID",
         {
-            timeZone: TIMEZONE,
+            timeZone:TIMEZONE,
 
             hour:"2-digit",
 
@@ -98,8 +104,13 @@ function formatWIB(date){
             hour12:false
         }
     )
-    .format(new Date(date))
-    .replace(/\./g,":");
+    .format(
+        new Date(date)
+    )
+    .replace(
+        /\./g,
+        ":"
+    );
 
 }
 
@@ -110,49 +121,42 @@ function formatWIB(date){
 
 async function getCandles(asset){
 
-    const symbol =
-        symbolFor(asset);
-
-
     const url =
     `https://otcharts.com/v1/candles` +
     `?venue=otc` +
-    `&symbol=${encodeURIComponent(symbol)}` +
+    `&symbol=${encodeURIComponent(symbolFor(asset))}` +
     `&tf=60` +
     `&limit=120`;
 
 
     const response =
-        await fetch(
-            url,
-            {
-                headers:{
-                    Authorization:
-                    `Bearer ${process.env.OTCHARTS_API_KEY}`
-                }
+    await fetch(
+        url,
+        {
+            headers:{
+                Authorization:
+                `Bearer ${process.env.OTCHARTS_API_KEY}`
             }
-        );
+        }
+    );
 
 
     if(!response.ok){
 
-        const text =
-            await response.text();
-
-
         throw new Error(
-            `OTCharts ${response.status}: ${text}`
+            `OTCharts ${response.status}`
         );
 
     }
 
 
     const raw =
-        await response.json();
+    await response.json();
 
 
     const candles =
-        normalizeCandles(raw);
+    normalizeCandles(raw);
+
 
 
     return candles.map(
@@ -174,26 +178,26 @@ async function getCandles(asset){
 
 
 // ======================================================
-// LATEST CLOSED CANDLE
+// LAST CLOSED CANDLE
 // ======================================================
 
 function getLatestClosedCandle(candles){
 
     const currentMinute =
-        Math.floor(
-            Date.now()/60000
-        )
-        *
-        60000;
+    Math.floor(
+        Date.now()/60000
+    )
+    *
+    60000;
 
 
     const closed =
-        candles.filter(
-            candle =>
-            candle.time.getTime()
-            <
-            currentMinute
-        );
+    candles.filter(
+        candle =>
+        candle.time.getTime()
+        <
+        currentMinute
+    );
 
 
     if(!closed.length){
@@ -219,24 +223,24 @@ async function getActiveSignal(){
     const {
         data,
         error
-    } =
+    }
+    =
     await supabase
-        .from("signals")
-        .select(
-            "id,asset,direction,entry_time,expiry_time,result"
-        )
-        .eq(
-            "result",
-            "PENDING"
-        )
-        .order(
-            "signal_time",
-            {
-                ascending:false
-            }
-        )
-        .limit(1);
-
+    .from("signals")
+    .select(
+        "id,asset,direction,entry_time,expiry_time,result"
+    )
+    .eq(
+        "result",
+        "PENDING"
+    )
+    .order(
+        "signal_time",
+        {
+            ascending:false
+        }
+    )
+    .limit(1);
 
 
     if(error){
@@ -257,14 +261,14 @@ async function getActiveSignal(){
 
 
     const signal =
-        data[0];
+    data[0];
 
 
     const expiry =
-        new Date(
-            signal.expiry_time
-        )
-        .getTime();
+    new Date(
+        signal.expiry_time
+    )
+    .getTime();
 
 
     if(
@@ -295,13 +299,13 @@ async function signalExists(key){
     }
     =
     await supabase
-        .from("signals")
-        .select("id")
-        .eq(
-            "signal_key",
-            key
-        )
-        .limit(1);
+    .from("signals")
+    .select("id")
+    .eq(
+        "signal_key",
+        key
+    )
+    .limit(1);
 
 
     if(error){
@@ -313,27 +317,27 @@ async function signalExists(key){
 
     return (
         data &&
-        data.length>0
+        data.length > 0
     );
 
 }
 
 // ======================================================
-// CLEAN TELEGRAM CAPTION
+// TELEGRAM CAPTION
 // ======================================================
 
 function formatSignal(signal){
 
     const direction =
-        signal.direction === "CALL"
-        ? "BUY"
-        : "SELL";
+    signal.direction === "CALL"
+    ? "BUY"
+    : "SELL";
 
 
     const emoji =
-        direction === "BUY"
-        ? "🟢"
-        : "🔴";
+    direction === "BUY"
+    ? "🟢"
+    : "🔴";
 
 
     let reasons = [];
@@ -345,10 +349,10 @@ function formatSignal(signal){
 
         reasons =
         signal.reasons.map(
-            r => {
+            item => {
 
                 let text =
-                String(r);
+                String(item);
 
 
                 text =
@@ -408,9 +412,7 @@ function formatSignal(signal){
 ⏱ M1 • 1 Minute
 
 🕐 Entry:
-${formatWIB(
-    signal.entryTime
-)} WIB
+${formatWIB(signal.entryTime)} WIB
 
 ${emoji} ${direction}
 
@@ -433,23 +435,23 @@ ${reasons.join("\n")}
 async function sendTelegramSignal(signal){
 
     const token =
-        process.env.TELEGRAM_BOT_TOKEN;
+    process.env.TELEGRAM_BOT_TOKEN;
 
 
     const chatId =
-        process.env.TELEGRAM_CHAT_ID;
+    process.env.TELEGRAM_CHAT_ID;
 
 
     const direction =
-        signal.direction === "CALL"
-        ? "BUY"
-        : "SELL";
+    signal.direction === "CALL"
+    ? "BUY"
+    : "SELL";
 
 
     const photo =
-        direction === "BUY"
-        ? BUY_IMAGE_URL
-        : SELL_IMAGE_URL;
+    direction === "BUY"
+    ? BUY_IMAGE_URL
+    : SELL_IMAGE_URL;
 
 
 
@@ -498,7 +500,7 @@ async function sendTelegramSignal(signal){
 
 
         throw new Error(
-            `Telegram Error: ${text}`
+            `Telegram ${text}`
         );
 
     }
@@ -508,7 +510,7 @@ async function sendTelegramSignal(signal){
 
 
 // ======================================================
-// CREATE ENTRY TIME
+// CREATE ENTRY & EXPIRY
 // ======================================================
 
 function createTimes(candle){
@@ -517,7 +519,9 @@ function createTimes(candle){
     new Date(
         candle.time.getTime()
         +
-        60 * 1000
+        ENTRY_DELAY_MINUTES *
+        60 *
+        1000
     );
 
 
@@ -547,7 +551,7 @@ function createTimes(candle){
 
 
 // ======================================================
-// MAIN ANALYZE ASSET
+// ANALYZE ASSET
 // ======================================================
 
 async function analyzeAsset(asset){
@@ -585,8 +589,8 @@ async function analyzeAsset(asset){
 
     const usable =
     candles.filter(
-        c =>
-        c.time.getTime()
+        candle =>
+        candle.time.getTime()
         <=
         closed.time.getTime()
     );
@@ -621,6 +625,7 @@ async function analyzeAsset(asset){
 
         ...signal,
 
+
         entryTime:
         times.entryTime,
 
@@ -639,7 +644,7 @@ async function analyzeAsset(asset){
 
 
 // ======================================================
-// SORT BEST SIGNAL
+// SELECT BEST SCORE
 // ======================================================
 
 function selectBestSignal(list){
@@ -647,20 +652,10 @@ function selectBestSignal(list){
     list.sort(
         (a,b)=>{
 
-            if(
-                b.score !==
+            return (
+                b.score -
                 a.score
-            ){
-
-                return (
-                    b.score -
-                    a.score
-                );
-
-            }
-
-
-            return 0;
+            );
 
         }
     );
@@ -719,7 +714,7 @@ if(secret){
 
 
 // ======================================================
-// CHECK ACTIVE SIGNAL
+// ACTIVE SIGNAL CHECK
 // ======================================================
 
 const active =
@@ -742,7 +737,7 @@ if(active){
         "ACTIVE_SIGNAL",
 
         message:
-        "Signal masih aktif",
+        "Masih ada signal aktif",
 
         activeSignal:
         active
@@ -774,7 +769,6 @@ for(
         await analyzeAsset(
             asset
         );
-
 
 
         if(signal){
@@ -890,7 +884,7 @@ const signalKey =
 
 
 // ======================================================
-// DUPLICATE
+// DUPLICATE CHECK
 // ======================================================
 
 if(
@@ -918,17 +912,14 @@ if(
 
 
 // ======================================================
-// SAVE SUPABASE
+// SAVE DATABASE
 // ======================================================
 
 const {
-
-data:inserted,
-
-error:insertError
+    data:inserted,
+    error:insertError
 
 }
-
 =
 await supabase
 .from("signals")
@@ -975,8 +966,9 @@ await supabase
     EXPIRATION_MINUTES,
 
 
+    // supaya tidak error NOT NULL
     entry_price:
-    null,
+    0,
 
 
     result:
@@ -1011,7 +1003,7 @@ await sendTelegramSignal(
 
 
 // ======================================================
-// SUCCESS RESPONSE
+// SUCCESS
 // ======================================================
 
 return res
@@ -1019,6 +1011,7 @@ return res
 .json({
 
     ok:true,
+
 
     mode:
     "SIGNAL_ONLY",
@@ -1058,22 +1051,21 @@ return res
 
     candidates:
     candidates.map(
-        x=>({
+        item => ({
 
             asset:
-            x.asset,
+            item.asset,
 
 
             direction:
-            x.direction,
+            item.direction,
 
 
             score:
-            x.score
+            item.score
 
         })
     )
-
 
 });
 
