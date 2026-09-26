@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { normalizeCandles, analyze } from "../signal-engine.js";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY =
@@ -14,8 +15,8 @@ const MIN_SCORE = Number(
   process.env.MIN_SIGNAL_SCORE || 2
 );
 
-// Tampilan waktu Telegram.
-// Sesuai contoh gambar: UTC +6
+// Tampilan Telegram.
+// Contoh gambar menggunakan UTC +6.
 const DISPLAY_UTC_OFFSET = Number(
   process.env.DISPLAY_UTC_OFFSET || 6
 );
@@ -60,41 +61,7 @@ async function getCandles(asset) {
     );
   }
 
-  const data = await response.json();
-
-  return Array.isArray(data)
-    ? data
-    : (data.candles || data.data || []);
-}
-
-// =====================================================
-// NORMALIZE CANDLE
-// =====================================================
-
-function normalizeCandle(c) {
-  return {
-    time: Number(
-      c.time ??
-      c.timestamp ??
-      c.t
-    ),
-    open: Number(
-      c.open ??
-      c.o
-    ),
-    high: Number(
-      c.high ??
-      c.h
-    ),
-    low: Number(
-      c.low ??
-      c.l
-    ),
-    close: Number(
-      c.close ??
-      c.c
-    )
-  };
+  return await response.json();
 }
 
 // =====================================================
@@ -156,27 +123,25 @@ function formatDisplayTime(timestamp) {
 }
 
 // =====================================================
-// SIGNAL ENGINE
+// ANALYZE
 // =====================================================
 
 async function analyzeAsset(asset) {
-  const rawCandles =
-    await getCandles(asset);
+  const raw = await getCandles(asset);
 
-  const candles = rawCandles
-    .map(normalizeCandle)
-    .filter(c =>
-      Number.isFinite(c.time) &&
-      Number.isFinite(c.open) &&
-      Number.isFinite(c.high) &&
-      Number.isFinite(c.low) &&
-      Number.isFinite(c.close)
-    )
-    .sort(
-      (a, b) => a.time - b.time
-    );
+  /*
+   * PENTING:
+   * Gunakan normalizeCandles dari signal-engine.js.
+   *
+   * Engine membutuhkan:
+   * candle.time = JavaScript Date
+   *
+   * Bukan:
+   * candle.time = number
+   */
+  const candles = normalizeCandles(raw);
 
-  if (candles.length < 60) {
+  if (candles.length < 220) {
     return {
       asset,
       signal: null,
@@ -185,30 +150,15 @@ async function analyzeAsset(asset) {
     };
   }
 
-  /*
-   * signal-engine.js adalah engine utama
-   * yang sudah kita buat sebelumnya.
-   */
-  const engine =
-    await import("../signal-engine.js");
-
-  const analysis =
-    engine.analyze(
-      asset,
-      candles,
-      MIN_SCORE
-    );
-
-  if (!analysis) {
-    return {
-      asset,
-      signal: null
-    };
-  }
+  const signal = analyze(
+    asset,
+    candles,
+    MIN_SCORE
+  );
 
   return {
     asset,
-    signal: analysis
+    signal
   };
 }
 
@@ -257,7 +207,7 @@ export default async function handler(req, res) {
           ).toUpperCase();
 
         const entryTime =
-          Number(
+          Date.parse(
             signal.entryTime
           );
 
@@ -285,23 +235,24 @@ export default async function handler(req, res) {
             asset,
             status: "ERROR",
             error:
-              "Signal engine menghasilkan data tidak lengkap."
+              "Data signal tidak lengkap."
           });
 
           continue;
         }
 
         /*
-         * Kunci unik signal.
-         * Mencegah signal yang sama dikirim
-         * berkali-kali saat scanner dipanggil.
+         * Signal key.
+         *
+         * Digunakan agar signal yang sama
+         * tidak dikirim berulang kali.
          */
         const signalKey =
-          `${asset}|${direction}|${entryTime}`;
+          `${asset}|${direction}|${signal.entryTime}`;
 
-        // -------------------------------------------------
+        // =================================================
         // CHECK DUPLICATE
-        // -------------------------------------------------
+        // =================================================
 
         const {
           data: existing,
@@ -330,15 +281,17 @@ export default async function handler(req, res) {
             asset,
             status: "DUPLICATE",
             direction,
-            score
+            score,
+            entryTime:
+              signal.entryTime
           });
 
           continue;
         }
 
-        // -------------------------------------------------
+        // =================================================
         // INSERT PENDING
-        // -------------------------------------------------
+        // =================================================
 
         const {
           data: inserted,
@@ -352,6 +305,7 @@ export default async function handler(req, res) {
             score,
             signal_key: signalKey,
             signal_time:
+              signal.signalTime ||
               new Date().toISOString(),
             entry_time:
               new Date(
@@ -371,9 +325,9 @@ export default async function handler(req, res) {
           );
         }
 
-        // -------------------------------------------------
-        // ADD TO FUTURE LIST
-        // -------------------------------------------------
+        // =================================================
+        // FUTURE LIST
+        // =================================================
 
         newSignals.push({
           id: inserted?.id,
@@ -412,9 +366,6 @@ export default async function handler(req, res) {
     // ===================================================
 
     if (newSignals.length > 0) {
-      /*
-       * Urutkan berdasarkan waktu entry.
-       */
       newSignals.sort(
         (a, b) =>
           a.entryTime - b.entryTime
