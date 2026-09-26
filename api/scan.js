@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+
 import {
   normalizeCandles,
   analyze
@@ -6,192 +7,201 @@ import {
 
 
 const SUPABASE_URL =
-  process.env.SUPABASE_URL;
+process.env.SUPABASE_URL;
+
 
 const SUPABASE_SERVICE_ROLE_KEY =
-  process.env.SUPABASE_SERVICE_ROLE_KEY;
+process.env.SUPABASE_SERVICE_ROLE_KEY;
+
 
 const OTCHARTS_API_KEY =
-  process.env.OTCHARTS_API_KEY;
+process.env.OTCHARTS_API_KEY;
+
 
 const TELEGRAM_BOT_TOKEN =
-  process.env.TELEGRAM_BOT_TOKEN;
+process.env.TELEGRAM_BOT_TOKEN;
+
 
 const TELEGRAM_CHAT_ID =
-  process.env.TELEGRAM_CHAT_ID;
+process.env.TELEGRAM_CHAT_ID;
+
 
 
 const MIN_SCORE =
-  Number(process.env.MIN_SIGNAL_SCORE || 3);
-
-
-const TIMEZONE =
-  "Asia/Jakarta";
-
-
-const EXPIRATION_MINUTES = 5;
-
-
-const ASSETS = [
-  "EUR/USD",
-  "GBP/USD",
-  "USD/JPY",
-  "AUD/USD"
-];
-
-
-const supabase = createClient(
-  SUPABASE_URL,
-  SUPABASE_SERVICE_ROLE_KEY
+Number(
+ process.env.MIN_SIGNAL_SCORE || 2
 );
 
 
-// =================================
+const TIMEZONE =
+"Asia/Jakarta";
+
+
+const EXPIRATION_MINUTES = 1;
+
+
+
+const ASSETS = [
+ "EUR/USD",
+ "GBP/USD",
+ "USD/JPY",
+ "AUD/USD"
+];
+
+
+
+const supabase =
+createClient(
+ SUPABASE_URL,
+ SUPABASE_SERVICE_ROLE_KEY
+);
+
+
+
+// ======================================
 // SYMBOL
-// =================================
+// ======================================
 
 function symbolFor(asset){
 
-  return `${asset.replace("/", "")}_otc`;
+ return `${asset.replace("/", "")}_otc`;
 
 }
 
 
-// =================================
-// GET CANDLES
-// =================================
+
+// ======================================
+// GET M1 CANDLES
+// ======================================
 
 async function getCandles(asset){
 
-  const url =
-    `https://otcharts.com/v1/candles` +
-    `?venue=otc` +
-    `&symbol=${encodeURIComponent(symbolFor(asset))}` +
-    `&tf=300` +
-    `&limit=250`;
-
-
-  const response =
-    await fetch(
-      url,
-      {
-        headers:{
-          Authorization:
-            `Bearer ${OTCHARTS_API_KEY}`
-        }
-      }
-    );
-
-
-  if(!response.ok){
-
-    throw new Error(
-      `OTCharts ${response.status}`
-    );
-
-  }
-
-
-  return await response.json();
-
-}
-
-
-// =================================
-// TIME FIX OTCHARTS
-// =================================
-
-function fixBrokerTime(date){
-
-  return new Date(
-    date.getTime()
-    -
-    (2 * 60 * 60 * 1000)
-  );
-
-}
-
-
-
-// =================================
-// NEXT M5 ENTRY
-// =================================
-
-function getNextEntry(){
-
-  const now =
-    new Date();
-
-
-  const entry =
-    new Date(
-      Math.ceil(
-        now.getTime()
-        /
-        (5*60*1000)
-      )
-      *
-      (5*60*1000)
-    );
-
-
-  return entry;
-
-}
-
-
-
-function formatWIB(date){
-
-  return new Intl.DateTimeFormat(
-    "id-ID",
-    {
-      timeZone: TIMEZONE,
-      hour:"2-digit",
-      minute:"2-digit",
-      hour12:false
-    }
-  ).format(date);
-
-}
-
-
-
-// =================================
-// TELEGRAM
-// =================================
-
-async function sendTelegram(text){
 
  const url =
- `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+ `https://otcharts.com/v1/candles`+
+ `?venue=otc`+
+ `&symbol=${encodeURIComponent(symbolFor(asset))}`+
+ `&tf=60`+
+ `&limit=250`;
+
 
 
  const response =
  await fetch(
-   url,
-   {
-    method:"POST",
-    headers:{
-      "Content-Type":
-      "application/json"
-    },
-    body:JSON.stringify({
-
-      chat_id:
-      TELEGRAM_CHAT_ID,
-
-      text
-
-    })
+  url,
+  {
+   headers:{
+    Authorization:
+    `Bearer ${OTCHARTS_API_KEY}`
    }
+  }
  );
 
 
  if(!response.ok){
 
   throw new Error(
-    await response.text()
+   await response.text()
+  );
+
+ }
+
+
+ return await response.json();
+
+}
+
+
+
+// ======================================
+// WIB FORMAT
+// ======================================
+
+function formatWIB(date){
+
+ return new Intl.DateTimeFormat(
+  "id-ID",
+  {
+   timeZone:TIMEZONE,
+   hour:"2-digit",
+   minute:"2-digit",
+   second:"2-digit",
+   hour12:false
+  }
+ )
+ .format(date);
+
+}
+
+
+
+// ======================================
+// NEXT M1 ENTRY
+// ======================================
+
+function nextEntryTime(){
+
+
+ const now =
+ new Date();
+
+
+ return new Date(
+
+  Math.ceil(
+   now.getTime()
+   /
+   60000
+  )
+  *
+  60000
+
+ );
+
+}
+
+
+
+// ======================================
+// TELEGRAM
+// ======================================
+
+async function sendTelegram(text){
+
+
+ const url =
+ `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+
+
+
+ const response =
+ await fetch(
+  url,
+  {
+   method:"POST",
+
+   headers:{
+    "Content-Type":
+    "application/json"
+   },
+
+   body:JSON.stringify({
+
+    chat_id:
+    TELEGRAM_CHAT_ID,
+
+    text
+
+   })
+
+  }
+ );
+
+
+ if(!response.ok){
+
+  throw new Error(
+   await response.text()
   );
 
  }
@@ -200,34 +210,36 @@ async function sendTelegram(text){
 
 
 
-// =================================
-// FORMAT SIGNAL
-// =================================
+// ======================================
+// TELEGRAM FORMAT
+// ======================================
 
-function telegramSignal(signal){
+function formatSignal(sig){
 
 
  const direction =
- signal.direction === "CALL"
+ sig.direction==="CALL"
  ? "BUY"
  : "SELL";
 
 
  const icon =
- signal.direction === "CALL"
- ? "🟩"
- : "🟥";
+ sig.direction==="CALL"
+ ?"🟩"
+ :"🟥";
 
 
  const entry =
- new Date(signal.entryTime);
+ new Date(
+  sig.entryTime
+ );
 
 
  const mg1 =
  new Date(
   entry.getTime()
   +
-  5*60000
+  60000
  );
 
 
@@ -235,7 +247,7 @@ function telegramSignal(signal){
  new Date(
   mg1.getTime()
   +
-  5*60000
+  60000
  );
 
 
@@ -243,34 +255,41 @@ function telegramSignal(signal){
  new Date(
   mg2.getTime()
   +
-  5*60000
+  60000
  );
 
 
 
  return `⚡ SIGNAL
 
-🌐 ${signal.asset} OTC
 
-Timeframe: M5
-⏱ Expiration: 5 minutes
+🌐 ${sig.asset} OTC
 
-⏰ Entry: ${formatWIB(entry)} WIB
+Timeframe: M1
 
-${icon} Direction: ${direction}
+⏱ Expiration: 1 minute
+
+
+⏰ Entry:
+${formatWIB(entry)} WIB
+
+
+${icon} Direction:
+${direction}
 
 
 📊 Martingale:
+
 1⃣ ${formatWIB(mg1)}
 2⃣ ${formatWIB(mg2)}
 3⃣ ${formatWIB(mg3)}
 
 
 📊 Confirmation:
-${signal.score}/10
+${sig.score}/10
 
 
-${signal.reasons
+${sig.reasons
 .map(x=>"🔎 "+x)
 .join("\n")}
 
@@ -281,17 +300,14 @@ ${signal.reasons
 
 
 
-// =================================
+// ======================================
 // MAIN
-// =================================
+// ======================================
 
 export default async function handler(
-req,
-res
+ req,
+ res
 ){
-
- const scannedAt =
- new Date().toISOString();
 
 
  const results=[];
@@ -303,7 +319,7 @@ res
 
 
  for(
- const asset of ASSETS
+  const asset of ASSETS
  ){
 
 
@@ -320,23 +336,6 @@ res
 
 
 
-   if(candles.length < 220){
-
-    results.push({
-
-     asset,
-
-     status:
-     "NOT_ENOUGH_DATA"
-
-    });
-
-    continue;
-
-   }
-
-
-
    const signal =
    analyze(
     asset,
@@ -348,6 +347,7 @@ res
 
    if(!signal){
 
+
     results.push({
 
      asset,
@@ -357,25 +357,52 @@ res
 
     });
 
+
     continue;
 
    }
 
 
 
-   // ENTRY WIB BROKER
-
    const entryTime =
-   getNextEntry();
+   nextEntryTime();
 
 
 
-   const expiryTime =
-   new Date(
+   const now =
+   new Date();
+
+
+
+   const seconds =
+   (
     entryTime.getTime()
-    +
-    EXPIRATION_MINUTES*60000
-   );
+    -
+    now.getTime()
+   )
+   /
+   1000;
+
+
+
+   // jangan kirim kalau terlalu dekat
+
+   if(seconds < 20){
+
+
+    results.push({
+
+     asset,
+
+     status:
+     "TOO_LATE"
+
+    });
+
+
+    continue;
+
+   }
 
 
 
@@ -383,8 +410,14 @@ res
    entryTime.toISOString();
 
 
+
    signal.expiryTime =
-   expiryTime.toISOString();
+   new Date(
+    entryTime.getTime()
+    +
+    60000
+   )
+   .toISOString();
 
 
 
@@ -409,6 +442,7 @@ res
 
    if(exist){
 
+
     results.push({
 
      asset,
@@ -418,9 +452,11 @@ res
 
     });
 
+
     continue;
 
    }
+
 
 
 
@@ -435,10 +471,12 @@ res
     asset,
 
     timeframe:
-    "M5",
+    "M1",
+
 
     direction:
     signal.direction,
+
 
     score:
     signal.score,
@@ -466,7 +504,7 @@ res
 
 
     expiration_minutes:
-    5,
+    1,
 
 
     result:
@@ -506,6 +544,7 @@ res
     status:
     "SIGNAL_READY",
 
+
     direction:
     signal.direction,
 
@@ -519,11 +558,11 @@ res
 
 
     expiryTime:
-    formatWIB(expiryTime),
-
-
-    entryPrice:
-    signal.entryPrice
+    formatWIB(
+     new Date(
+      signal.expiryTime
+     )
+    )
 
    });
 
@@ -553,20 +592,18 @@ res
 
 
 
- // SEND TELEGRAM
-
- if(newSignals.length > 0){
+ if(newSignals.length>0){
 
 
-  const message =
-  newSignals
-  .map(telegramSignal)
-  .join(
-   "\n\n================\n\n"
+  await sendTelegram(
+
+   newSignals
+   .map(formatSignal)
+   .join(
+    "\n\n==========\n\n"
+   )
+
   );
-
-
-  await sendTelegram(message);
 
  }
 
@@ -577,17 +614,18 @@ res
 
   ok:true,
 
-  scannedAt,
-
   timeframe:
-  "M5",
+  "M1",
 
   timezone:
   TIMEZONE,
 
-
   expirationMinutes:
   EXPIRATION_MINUTES,
+
+
+  minScore:
+  MIN_SCORE,
 
 
   newSignals:
@@ -595,7 +633,6 @@ res
 
 
   results
-
 
  });
 
@@ -616,6 +653,5 @@ res
 
 
  }
-
 
 }
