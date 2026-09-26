@@ -1,68 +1,70 @@
 // signal-engine.js
-// EMA50 + RSI14 M1 SCALPING
+// M1 EMA50 + RSI14 LOOSE SCALPING
 
 const M1_MS = 60 * 1000;
 
 
-// =======================================
-// NORMALIZE CANDLES
-// =======================================
+// =====================================
+// NORMALIZE
+// =====================================
 
 export function normalizeCandles(raw){
 
-    let rows = [];
+    let rows=[];
+
 
     if(Array.isArray(raw)){
-        rows = raw;
+        rows=raw;
     }
     else if(Array.isArray(raw.candles)){
-        rows = raw.candles;
+        rows=raw.candles;
     }
     else if(Array.isArray(raw.data)){
-        rows = raw.data;
+        rows=raw.data;
     }
 
 
-    return rows
-    .map(c => {
+    return rows.map(c=>{
 
         const t =
-            c.time ??
-            c.timestamp ??
-            c.ts;
+        c.time ??
+        c.timestamp ??
+        c.ts;
 
 
         const ms =
-            typeof t === "number"
-            ? (
-                t < 10000000000
-                ? t * 1000
-                : t
-              )
-            : Date.parse(t);
+        typeof t==="number"
+        ?
+        (
+          t < 10000000000
+          ?
+          t*1000
+          :
+          t
+        )
+        :
+        Date.parse(t);
+
 
 
         return {
 
-            time:
-            new Date(ms),
+            time:new Date(ms),
 
-            open:
-            Number(c.open ?? c.o),
+            open:Number(c.open ?? c.o),
 
-            high:
-            Number(c.high ?? c.h),
+            high:Number(c.high ?? c.h),
 
-            low:
-            Number(c.low ?? c.l),
+            low:Number(c.low ?? c.l),
 
-            close:
-            Number(c.close ?? c.c)
+            close:Number(c.close ?? c.c)
 
         };
 
+
     })
-    .filter(c =>
+    .filter(c=>
+
         Number.isFinite(
             c.time.getTime()
         )
@@ -74,6 +76,7 @@ export function normalizeCandles(raw){
         Number.isFinite(c.low)
         &&
         Number.isFinite(c.close)
+
     )
     .sort(
         (a,b)=>
@@ -84,11 +87,11 @@ export function normalizeCandles(raw){
 
 
 
-// =======================================
+// =====================================
 // EMA
-// =======================================
+// =====================================
 
-function ema(values, period){
+function ema(values,period){
 
     if(values.length < period)
         return null;
@@ -107,6 +110,7 @@ function ema(values, period){
     ) / period;
 
 
+
     for(
         let i=period;
         i<values.length;
@@ -114,9 +118,9 @@ function ema(values, period){
     ){
 
         result =
-        values[i] * k
+        values[i]*k
         +
-        result * (1-k);
+        result*(1-k);
 
     }
 
@@ -127,18 +131,19 @@ function ema(values, period){
 
 
 
-// =======================================
-// RSI 14
-// =======================================
+// =====================================
+// RSI
+// =====================================
 
-function rsi(values, period=14){
+function rsi(values,period=14){
 
-    if(values.length <= period)
+    if(values.length<=period)
         return null;
 
 
     let gain=0;
     let loss=0;
+
 
 
     for(
@@ -151,12 +156,13 @@ function rsi(values, period=14){
         values[i]-values[i-1];
 
 
-        if(diff>0)
+        if(diff>=0)
             gain+=diff;
         else
             loss+=Math.abs(diff);
 
     }
+
 
 
     let avgGain =
@@ -189,21 +195,22 @@ function rsi(values, period=14){
 
         avgGain =
         (
-            avgGain*(period-1)
-            +
-            g
-        )/period;
+          avgGain*(period-1)+g
+        )
+        /
+        period;
 
 
 
         avgLoss =
         (
-            avgLoss*(period-1)
-            +
-            l
-        )/period;
+          avgLoss*(period-1)+l
+        )
+        /
+        period;
 
     }
+
 
 
     if(avgLoss===0)
@@ -214,44 +221,15 @@ function rsi(values, period=14){
     avgGain/avgLoss;
 
 
-    return
-    100 -
-    (
-        100/(1+rs)
-    );
+    return 100-(100/(1+rs));
 
 }
 
 
 
-// =======================================
-// CANDLE CONFIRMATION
-// =======================================
-
-function bullish(c){
-
-    return (
-        c.close >
-        c.open
-    );
-
-}
-
-
-function bearish(c){
-
-    return (
-        c.close <
-        c.open
-    );
-
-}
-
-
-
-// =======================================
+// =====================================
 // ANALYZE
-// =======================================
+// =====================================
 
 export function analyze(
     asset,
@@ -275,12 +253,9 @@ export function analyze(
     candles.length-1;
 
 
-    const current =
+
+    const candle =
     candles[i];
-
-
-    const previous =
-    candles[i-1];
 
 
 
@@ -291,7 +266,6 @@ export function analyze(
     );
 
 
-
     const rsi14 =
     rsi(
         closes,
@@ -300,10 +274,15 @@ export function analyze(
 
 
 
-    if(
-        !ema50 ||
-        !rsi14
-    )
+    const prevRSI =
+    rsi(
+        closes.slice(0,-1),
+        14
+    );
+
+
+
+    if(!ema50 || !rsi14)
         return null;
 
 
@@ -321,7 +300,8 @@ export function analyze(
     // EMA50
     // =========================
 
-    if(current.close > ema50){
+
+    if(candle.close > ema50){
 
         buy++;
 
@@ -332,7 +312,7 @@ export function analyze(
     }
 
 
-    if(current.close < ema50){
+    if(candle.close < ema50){
 
         sell++;
 
@@ -345,62 +325,13 @@ export function analyze(
 
 
     // =========================
-    // EMA SLOPE
-    // =========================
-
-    const prevEMA =
-    ema(
-        closes.slice(0,-1),
-        50
-    );
-
-
-    if(prevEMA){
-
-        if(ema50 > prevEMA){
-
-            buy++;
-
-            buyReasons.push(
-                "EMA50 naik"
-            );
-
-        }
-
-
-        if(ema50 < prevEMA){
-
-            sell++;
-
-            sellReasons.push(
-                "EMA50 turun"
-            );
-
-        }
-
-    }
-
-
-
-    // =========================
     // RSI14
     // =========================
 
-    const prevRSI =
-    rsi(
-        closes.slice(0,-1),
-        14
-    );
 
+    if(prevRSI){
 
-
-    if(
-        prevRSI
-    ){
-
-        if(
-            rsi14 > prevRSI
-        ){
+        if(rsi14 > prevRSI){
 
             buy++;
 
@@ -411,9 +342,7 @@ export function analyze(
         }
 
 
-        if(
-            rsi14 < prevRSI
-        ){
+        if(rsi14 < prevRSI){
 
             sell++;
 
@@ -428,12 +357,11 @@ export function analyze(
 
 
     // =========================
-    // CANDLE CONFIRMATION
+    // CANDLE CONFIRM
     // =========================
 
-    if(
-        bullish(current)
-    ){
+
+    if(candle.close > candle.open){
 
         buy++;
 
@@ -445,9 +373,7 @@ export function analyze(
 
 
 
-    if(
-        bearish(current)
-    ){
+    if(candle.close < candle.open){
 
         sell++;
 
@@ -459,21 +385,22 @@ export function analyze(
 
 
 
+
     // =========================
-    // FINAL SIGNAL
+    // SIGNAL
     // =========================
 
 
     if(
-        buy >= minScore &&
-        buy > sell
+        buy>=2 &&
+        buy>sell
     ){
 
-        return createSignal(
+        return makeSignal(
             asset,
             "CALL",
             buy,
-            current,
+            candle,
             buyReasons
         );
 
@@ -482,15 +409,15 @@ export function analyze(
 
 
     if(
-        sell >= minScore &&
-        sell > buy
+        sell>=2 &&
+        sell>buy
     ){
 
-        return createSignal(
+        return makeSignal(
             asset,
             "PUT",
             sell,
-            current,
+            candle,
             sellReasons
         );
 
@@ -504,11 +431,11 @@ export function analyze(
 
 
 
-// =======================================
+// =====================================
 // CREATE SIGNAL
-// =======================================
+// =====================================
 
-function createSignal(
+function makeSignal(
     asset,
     direction,
     score,
@@ -525,12 +452,14 @@ function createSignal(
     );
 
 
+
     const expiry =
     new Date(
         entry.getTime()
         +
         M1_MS
     );
+
 
 
     return {
@@ -547,19 +476,12 @@ function createSignal(
         .toISOString(),
 
 
-        sourceCandle:
-        candle.time
-        .toISOString(),
-
-
         entryTime:
-        entry
-        .toISOString(),
+        entry.toISOString(),
 
 
         expiryTime:
-        expiry
-        .toISOString(),
+        expiry.toISOString(),
 
 
         entryPrice:
