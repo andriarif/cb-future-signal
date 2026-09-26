@@ -17,18 +17,29 @@ function symbolFor(asset) {
 }
 
 
+// WIB FORMAT
 function formatWIB(date) {
+
   return new Intl.DateTimeFormat(
     "id-ID",
     {
       timeZone: "Asia/Jakarta",
-      dateStyle: "short",
-      timeStyle: "medium",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
       hour12: false
     }
   ).format(date);
+
 }
 
+
+// =================================================
+// GET CANDLE
+// =================================================
 
 async function getCandles(asset) {
 
@@ -41,181 +52,214 @@ async function getCandles(asset) {
 
 
   const response =
-    await fetch(url, {
-      headers: {
-        Authorization:
-          `Bearer ${OTCHARTS_API_KEY}`
+    await fetch(
+      url,
+      {
+        headers:{
+          Authorization:
+            `Bearer ${OTCHARTS_API_KEY}`
+        }
       }
-    });
-
-
-  if (!response.ok) {
-    throw new Error(
-      `OTCharts ${response.status}: ${await response.text()}`
     );
+
+
+  if(!response.ok){
+
+    throw new Error(
+      `OTCharts ${response.status}`
+    );
+
   }
 
 
-  const raw =
-    await response.json();
-
-
-  let rows = [];
-
-
-  if (Array.isArray(raw)) {
-    rows = raw;
-  }
-  else if (Array.isArray(raw.candles)) {
-    rows = raw.candles;
-  }
-  else if (Array.isArray(raw.data)) {
-    rows = raw.data;
-  }
-
-
-  return rows.map(c => {
-
-    const t =
-      c.time ??
-      c.timestamp ??
-      c.ts;
-
-
-    const ms =
-      typeof t === "number"
-        ? (
-            t < 10000000000
-              ? t * 1000
-              : t
-          )
-        : Date.parse(t);
-
-
-    return {
-      timeUTC:
-        new Date(ms).toISOString(),
-
-      timeWIB:
-        formatWIB(new Date(ms)),
-
-      open:
-        c.open ?? c.o,
-
-      close:
-        c.close ?? c.c
-    };
-
-  });
+  return await response.json();
 
 }
 
 
 
+// =================================================
+// NORMALIZE TIME
+// =================================================
+
+function parseCandleTime(t){
+
+  let ms;
+
+
+  if(typeof t === "number"){
+
+    ms =
+      t < 10000000000
+        ? t * 1000
+        : t;
+
+  }
+  else {
+
+    const parsed =
+      Date.parse(t);
+
+
+    /*
+      OTCharts memakai waktu broker.
+      Kita koreksi supaya sesuai WIB.
+    */
+
+    ms =
+      parsed -
+      (7 * 60 * 60 * 1000);
+
+  }
+
+
+  return new Date(ms);
+
+}
+
+
+
+// =================================================
+// MAIN
+// =================================================
+
 export default async function handler(
   req,
   res
-) {
+){
 
-  try {
-
-    const now =
-      new Date();
+try{
 
 
-    const results = [];
+  const now =
+    new Date();
 
 
-    for (
-      const asset of ASSETS
-    ) {
-
-      const candles =
-        await getCandles(asset);
+  const results=[];
 
 
-      const last =
-        candles[
-          candles.length - 1
-        ];
+
+  for(
+    const asset of ASSETS
+  ){
 
 
-      const nextEntry =
-        new Date(
-          new Date(last.timeUTC)
-            .getTime()
-            +
-            5 * 60 * 1000
-        );
+    const raw =
+      await getCandles(asset);
 
 
-      results.push({
 
-        asset,
-
-
-        latestCandleUTC:
-          last.timeUTC,
+    let rows=[];
 
 
-        latestCandleWIB:
-          last.timeWIB,
-
-
-        nextEntryUTC:
-          nextEntry.toISOString(),
-
-
-        nextEntryWIB:
-          formatWIB(nextEntry),
-
-
-        lastClose:
-          last.close
-
-      });
-
+    if(Array.isArray(raw)){
+      rows=raw;
+    }
+    else if(Array.isArray(raw.candles)){
+      rows=raw.candles;
+    }
+    else if(Array.isArray(raw.data)){
+      rows=raw.data;
     }
 
 
-    return res.status(200).json({
 
-      ok:true,
-
-
-      botCurrentTimeUTC:
-        now.toISOString(),
+    const last =
+      rows[
+        rows.length-1
+      ];
 
 
-      botCurrentTimeWIB:
-        formatWIB(now),
+
+    const candleTime =
+      parseCandleTime(
+        last.time ??
+        last.timestamp ??
+        last.ts
+      );
 
 
-      timezone:
-        "Asia/Jakarta",
+
+    const next =
+      new Date(
+        candleTime.getTime()
+        +
+        5*60*1000
+      );
 
 
-      timeframe:
-        "M5",
+
+    results.push({
+
+      asset,
 
 
-      results
+      candleBrokerTime:
+        formatWIB(candleTime),
+
+
+      nextEntry:
+        formatWIB(next),
+
+
+      candleUTC:
+        candleTime.toISOString(),
+
+
+      close:
+        last.close ??
+        last.c
 
     });
 
 
   }
-  catch(error) {
 
-    return res.status(500).json({
 
-      ok:false,
 
-      error:
-        error.message
+  return res.status(200)
+  .json({
 
-    });
+    ok:true,
 
-  }
+
+    botTimeUTC:
+      now.toISOString(),
+
+
+    botTimeWIB:
+      formatWIB(now),
+
+
+    brokerTimezone:
+      "Asia/Jakarta",
+
+
+    timeframe:
+      "M5",
+
+
+    results
+
+  });
+
+
+
+}
+catch(error){
+
+
+ return res.status(500)
+ .json({
+
+   ok:false,
+
+   error:
+     error.message
+
+ });
+
+
+}
 
 }
