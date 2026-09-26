@@ -1,62 +1,31 @@
 // api/scan.js
-// CB Future Signal - M1
-// SINGLE BEST SIGNAL
-// EMA50 + RSI14
-// OTCharts -2 Hours Correction
-// Entry tidak mepet: +1 candle dari candle berikutnya
-// WIB Asia/Jakarta
+// CB Future Signal - SIGNAL ONLY
+// Strategy: M1 EMA50 + RSI14 + Candle Confirmation
+// Telegram: SIGNAL ONLY
+// No Entry Price
+// No Expiration Price
+// No WIN / LOSS
+// No Tick Price
+// Timezone: Asia/Jakarta
 
 import { createClient } from "@supabase/supabase-js";
 import {
-  normalizeCandles,
-  analyze
+    normalizeCandles,
+    analyze
 } from "../signal-engine.js";
 
-const SUPABASE_URL =
-  process.env.SUPABASE_URL;
+const TIMEZONE = "Asia/Jakarta";
+const TIMEFRAME = "M1";
+const EXPIRATION_MINUTES = 1;
 
-const SUPABASE_SERVICE_ROLE_KEY =
-  process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-const OTCHARTS_API_KEY =
-  process.env.OTCHARTS_API_KEY;
-
-const TELEGRAM_BOT_TOKEN =
-  process.env.TELEGRAM_BOT_TOKEN;
-
-const TELEGRAM_CHAT_ID =
-  process.env.TELEGRAM_CHAT_ID;
-
-const MIN_SCORE =
-  Number(
-    process.env.MIN_SIGNAL_SCORE || 2
-  );
-
-const TIMEZONE =
-  "Asia/Jakarta";
-
-const TIMEFRAME =
-  "M1";
-
-const EXPIRATION_MINUTES =
-  1;
-
-// OTCharts sebelumnya terbukti +2 jam
+// OTCharts OTC timestamp correction
 const OTCHARTS_CORRECTION_MS =
-  -2 * 60 * 60 * 1000;
+    -2 * 60 * 60 * 1000;
 
-const ASSETS = [
-  "EUR/USD",
-  "GBP/USD",
-  "USD/JPY",
-  "AUD/USD"
-];
-
-const supabase =
-  createClient(
-    SUPABASE_URL,
-    SUPABASE_SERVICE_ROLE_KEY
-  );
+const supabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
 
 // ======================================================
@@ -64,13 +33,64 @@ const supabase =
 // ======================================================
 
 function symbolFor(asset) {
+    return asset.replace("/", "") + "_otc";
+}
 
-  return (
-    asset
-      .replace("/", "")
-      .toUpperCase() +
-    "_otc"
-  );
+
+// ======================================================
+// CORRECT OTCHARTS TIME
+// ======================================================
+
+function correctCandleTimes(candles) {
+    return candles.map(c => ({
+        ...c,
+        time: new Date(
+            c.time.getTime() +
+            OTCHARTS_CORRECTION_MS
+        )
+    }));
+}
+
+
+// ======================================================
+// GET M1 CANDLES
+// ======================================================
+
+async function getCandles(asset) {
+
+    const symbol = symbolFor(asset);
+
+    const url =
+        `https://otcharts.com/v1/candles` +
+        `?venue=otc` +
+        `&symbol=${encodeURIComponent(symbol)}` +
+        `&tf=60` +
+        `&limit=120`;
+
+    const response = await fetch(url, {
+        headers: {
+            Authorization:
+                `Bearer ${process.env.OTCHARTS_API_KEY}`
+        }
+    });
+
+    if (!response.ok) {
+
+        const body =
+            await response.text();
+
+        throw new Error(
+            `OTCharts ${response.status}: ${body.slice(0, 300)}`
+        );
+    }
+
+    const raw =
+        await response.json();
+
+    const candles =
+        normalizeCandles(raw);
+
+    return correctCandleTimes(candles);
 }
 
 
@@ -80,109 +100,109 @@ function symbolFor(asset) {
 
 function formatWIB(date) {
 
-  return new Intl.DateTimeFormat(
-    "id-ID",
-    {
-      timeZone: TIMEZONE,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hour12: false
-    }
-  ).format(
-    new Date(date)
-  );
-}
-
-
-function formatTimeWIB(date) {
-
-  return new Intl.DateTimeFormat(
-    "id-ID",
-    {
-      timeZone: TIMEZONE,
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hour12: false
-    }
-  ).format(
-    new Date(date)
-  );
-}
-
-
-// ======================================================
-// GET CANDLES
-// ======================================================
-
-async function getCandles(asset) {
-
-  const symbol =
-    symbolFor(asset);
-
-  const url =
-    `https://otcharts.com/v1/candles` +
-    `?venue=otc` +
-    `&symbol=${encodeURIComponent(symbol)}` +
-    `&tf=60` +
-    `&limit=120`;
-
-  const response =
-    await fetch(
-      url,
-      {
-        method: "GET",
-        headers: {
-          Authorization:
-            `Bearer ${OTCHARTS_API_KEY}`
+    return new Intl.DateTimeFormat(
+        "id-ID",
+        {
+            timeZone: TIMEZONE,
+            day: "2-digit",
+            month: "2-digit",
+            year: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false
         }
-      }
-    );
-
-  const text =
-    await response.text();
-
-  if (!response.ok) {
-
-    throw new Error(
-      `OTCharts ${response.status}: ${text}`
-    );
-  }
-
-  try {
-
-    return JSON.parse(text);
-
-  } catch {
-
-    throw new Error(
-      "Response OTCharts bukan JSON"
-    );
-  }
+    )
+        .format(date)
+        .replace(/\./g, ":");
 }
 
 
 // ======================================================
-// KOREKSI WAKTU OTCHARTS
+// GET LATEST CLOSED M1 CANDLE
 // ======================================================
 
-function correctCandleTimes(candles) {
+function getLatestClosedCandle(candles) {
 
-  return candles.map(
-    candle => ({
-      ...candle,
+    const now =
+        new Date();
 
-      time:
-        new Date(
-          candle.time.getTime() +
-          OTCHARTS_CORRECTION_MS
-        )
-    })
-  );
+    const currentMinute =
+        Math.floor(
+            now.getTime() / 60000
+        ) * 60000;
+
+    const closed =
+        candles.filter(
+            candle =>
+                candle.time.getTime() <
+                currentMinute
+        );
+
+    if (!closed.length) {
+        return null;
+    }
+
+    return closed[
+        closed.length - 1
+    ];
+}
+
+
+// ======================================================
+// SIGNAL MESSAGE
+// ======================================================
+
+function formatSignal(signal) {
+
+    const direction =
+        signal.direction === "CALL"
+            ? "BUY"
+            : "SELL";
+
+    const emoji =
+        direction === "BUY"
+            ? "🟢"
+            : "🔴";
+
+    const reasons =
+        Array.isArray(signal.reasons)
+            ? signal.reasons
+            : [];
+
+    const reasonText =
+        reasons
+            .map(reason =>
+                `🔎 ${reason}`
+            )
+            .join("\n");
+
+    return (
+`━━━━━━━━━━━━━━━━━━
+⚡ SIGNAL
+━━━━━━━━━━━━━━━━━━
+
+🌐 ${signal.asset} OTC
+
+Timeframe: M1
+⏱️ Expiration: 1 minute
+
+⏰ Entry:
+${formatWIB(
+    new Date(signal.entryTime)
+)} WIB
+
+${emoji} Direction:
+${direction}
+
+📊 Confirmation:
+${signal.score}/10
+
+${reasonText}
+
+⚠️ Entry sesuai waktu signal
+━━━━━━━━━━━━━━━━━━`
+    );
 }
 
 
@@ -192,330 +212,76 @@ function correctCandleTimes(candles) {
 
 async function sendTelegram(text) {
 
-  const url =
-    `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+    const token =
+        process.env.TELEGRAM_BOT_TOKEN;
 
-  const response =
-    await fetch(
-      url,
-      {
-        method: "POST",
+    const chatId =
+        process.env.TELEGRAM_CHAT_ID;
 
-        headers: {
-          "Content-Type":
-            "application/json"
-        },
+    if (!token || !chatId) {
 
-        body: JSON.stringify({
-          chat_id:
-            TELEGRAM_CHAT_ID,
-
-          text
-        })
-      }
-    );
-
-  const responseText =
-    await response.text();
-
-  if (!response.ok) {
-
-    throw new Error(
-      `Telegram ${response.status}: ${responseText}`
-    );
-  }
-
-  return responseText;
-}
-
-
-// ======================================================
-// FORMAT SIGNAL
-// ======================================================
-
-function formatSignal(signal) {
-
-  const direction =
-    signal.direction === "CALL"
-      ? "BUY"
-      : "SELL";
-
-  const icon =
-    signal.direction === "CALL"
-      ? "🟢"
-      : "🔴";
-
-  let text = "";
-
-  text += "⚡ SIGNAL\n\n";
-
-  text +=
-    `🌐 ${signal.asset} OTC\n\n`;
-
-  text +=
-    `Timeframe: ${TIMEFRAME}\n`;
-
-  text +=
-    `⏱ Expiration: ${EXPIRATION_MINUTES} minute\n\n`;
-
-  text +=
-    "⏰ Entry:\n";
-
-  text +=
-    `${formatTimeWIB(
-      signal.entryTime
-    )} WIB\n\n`;
-
-  text +=
-    `${icon} Direction:\n`;
-
-  text +=
-    `${direction}\n\n`;
-
-  text +=
-    "📊 Confirmation:\n";
-
-  text +=
-    `${signal.score}/10\n\n`;
-
-  if (
-    Array.isArray(signal.reasons) &&
-    signal.reasons.length > 0
-  ) {
-
-    for (
-      const reason of signal.reasons
-    ) {
-
-      text +=
-        `🔎 ${reason}\n`;
+        throw new Error(
+            "Telegram environment variables belum lengkap."
+        );
     }
 
-    text += "\n";
-  }
+    const url =
+        `https://api.telegram.org/bot${token}/sendMessage`;
 
-  text +=
-    "⚠️ Entry sesuai waktu signal";
+    const response =
+        await fetch(url, {
 
-  return text;
+            method: "POST",
+
+            headers: {
+                "Content-Type":
+                    "application/json"
+            },
+
+            body: JSON.stringify({
+                chat_id: chatId,
+                text
+            })
+        });
+
+    if (!response.ok) {
+
+        const body =
+            await response.text();
+
+        throw new Error(
+            `Telegram ${response.status}: ${body.slice(0, 300)}`
+        );
+    }
 }
 
 
 // ======================================================
-// CANDLE M1 YANG SUDAH CLOSED
+// DUPLICATE CHECK
 // ======================================================
 
-function getLatestClosedCandle(
-  candles
-) {
+async function signalExists(signalKey) {
 
-  if (!candles.length) {
-    return null;
-  }
+    const {
+        data,
+        error
+    } = await supabase
+        .from("signals")
+        .select("id")
+        .eq(
+            "signal_key",
+            signalKey
+        )
+        .limit(1);
 
-  const now =
-    Date.now();
+    if (error) {
+        throw error;
+    }
 
-  const currentMinute =
-    Math.floor(
-      now / 60000
-    ) * 60000;
-
-  const closed =
-    candles.filter(
-      candle =>
-        candle.time.getTime() <
-        currentMinute
+    return (
+        Array.isArray(data) &&
+        data.length > 0
     );
-
-  if (!closed.length) {
-    return null;
-  }
-
-  return closed[
-    closed.length - 1
-  ];
-}
-
-
-// ======================================================
-// ANALYZE ASSET
-// ======================================================
-
-async function analyzeAsset(
-  asset
-) {
-
-  const raw =
-    await getCandles(asset);
-
-  let candles =
-    normalizeCandles(raw);
-
-  if (
-    candles.length < 60
-  ) {
-
-    return {
-      asset,
-      signal: null,
-      error:
-        `Candle kurang: ${candles.length}`
-    };
-  }
-
-  // Koreksi waktu -2 jam
-  candles =
-    correctCandleTimes(
-      candles
-    );
-
-  candles.sort(
-    (a, b) =>
-      a.time.getTime() -
-      b.time.getTime()
-  );
-
-  // Ambil candle yang benar-benar CLOSED
-  const closedCandle =
-    getLatestClosedCandle(
-      candles
-    );
-
-  if (!closedCandle) {
-
-    return {
-      asset,
-      signal: null,
-      error:
-        "Tidak ada candle M1 closed"
-    };
-  }
-
-  // Data sampai candle CLOSED
-  const closedCandles =
-    candles.filter(
-      candle =>
-        candle.time.getTime() <=
-        closedCandle.time.getTime()
-    );
-
-  if (
-    closedCandles.length < 60
-  ) {
-
-    return {
-      asset,
-      signal: null,
-      error:
-        `Closed candle kurang: ${closedCandles.length}`
-    };
-  }
-
-  // Analisis EMA50 + RSI14
-  const signal =
-    analyze(
-      asset,
-      closedCandles,
-      MIN_SCORE
-    );
-
-  if (!signal) {
-
-    return {
-      asset,
-      signal: null,
-      closedCandle
-    };
-  }
-
-  // ====================================================
-  // ENTRY BARU
-  //
-  // Candle CLOSED : 22:22
-  // Candle berikut : 22:23
-  // ENTRY          : 22:24
-  //
-  // Jadi tidak mepet.
-  // ====================================================
-
-  const entryTime =
-    new Date(
-      closedCandle.time.getTime() +
-      2 * 60 * 1000
-    );
-
-  const expiryTime =
-    new Date(
-      entryTime.getTime() +
-      EXPIRATION_MINUTES *
-      60 *
-      1000
-    );
-
-  const now =
-    Date.now();
-
-  // Entry tidak boleh sudah lewat
-  if (
-    entryTime.getTime() <= now
-  ) {
-
-    return {
-      asset,
-      signal: null,
-      stale: true,
-      closedCandle,
-      entryTime
-    };
-  }
-
-  // Entry idealnya 1-2 menit dari sekarang.
-  const secondsToEntry =
-    Math.floor(
-      (
-        entryTime.getTime() -
-        now
-      ) / 1000
-    );
-
-  // Kalau terlalu jauh, jangan kirim.
-  if (
-    secondsToEntry >
-    120
-  ) {
-
-    return {
-      asset,
-      signal: null,
-      invalidTime: true,
-      closedCandle,
-      entryTime,
-      error:
-        "Entry terlalu jauh dari waktu sekarang"
-    };
-  }
-
-  signal.entryTime =
-    entryTime.toISOString();
-
-  signal.expiryTime =
-    expiryTime.toISOString();
-
-  signal.expirationMinutes =
-    EXPIRATION_MINUTES;
-
-  signal.sourceCandleTime =
-    closedCandle.time.toISOString();
-
-  signal.entryPrice =
-    closedCandle.close;
-
-  return {
-    asset,
-    signal,
-    closedCandle
-  };
 }
 
 
@@ -524,535 +290,401 @@ async function analyzeAsset(
 // ======================================================
 
 export default async function handler(
-  req,
-  res
+    req,
+    res
 ) {
 
-  try {
+    try {
 
-    // ==================================================
-    // 1. CEK PENDING
-    // ==================================================
+        // ------------------------------------------------
+        // OPTIONAL SECRET
+        // ------------------------------------------------
 
-    const {
-      data: pending,
-      error: pendingError
-    } =
-      await supabase
-        .from("signals")
-        .select(
-          "id,asset,direction,score,entry_time,expiry_time,result"
-        )
-        .eq(
-          "result",
-          "PENDING"
-        )
-        .order(
-          "entry_time",
-          {
-            ascending: true
-          }
-        )
-        .limit(1);
+        const secret =
+            process.env.RUN_SECRET;
 
-    if (pendingError) {
+        if (secret) {
 
-      throw new Error(
-        `Supabase PENDING: ${pendingError.message}`
-      );
-    }
+            const provided =
+                req.query?.secret ||
+                req.headers[
+                    "x-run-secret"
+                ];
 
-    // Masih ada signal aktif
-    if (
-      pending &&
-      pending.length > 0
-    ) {
+            if (
+                provided !== secret
+            ) {
 
-      const p =
-        pending[0];
-
-      return res.status(200).json({
-
-        ok: true,
-
-        status:
-          "WAITING_PENDING",
-
-        timeframe:
-          TIMEFRAME,
-
-        timezone:
-          TIMEZONE,
-
-        correction:
-          "-2 hours OTCharts",
-
-        expirationMinutes:
-          EXPIRATION_MINUTES,
-
-        pending: {
-
-          id:
-            p.id,
-
-          asset:
-            p.asset,
-
-          direction:
-            p.direction,
-
-          score:
-            p.score,
-
-          entryTime:
-            p.entry_time,
-
-          entryWIB:
-            formatWIB(
-              p.entry_time
-            ),
-
-          expiryTime:
-            p.expiry_time,
-
-          expiryWIB:
-            formatWIB(
-              p.expiry_time
-            ),
-
-          result:
-            p.result
-        }
-      });
-    }
-
-
-    // ==================================================
-    // 2. SCAN SEMUA ASSET
-    // ==================================================
-
-    const results = [];
-
-    const candidates = [];
-
-    for (
-      const asset of ASSETS
-    ) {
-
-      try {
-
-        const result =
-          await analyzeAsset(
-            asset
-          );
-
-        if (result.error) {
-
-          results.push({
-
-            asset,
-
-            status:
-              "ERROR",
-
-            error:
-              result.error
-          });
-
-          continue;
+                return res
+                    .status(401)
+                    .json({
+                        ok: false,
+                        error:
+                            "UNAUTHORIZED"
+                    });
+            }
         }
 
-        if (result.stale) {
 
-          results.push({
+        // ------------------------------------------------
+        // CURRENT TIME
+        // ------------------------------------------------
 
-            asset,
+        const now =
+            new Date();
 
-            status:
-              "STALE",
+        const results = [];
 
-            entryTime:
-              result.entryTime,
 
-            entryWIB:
-              formatWIB(
-                result.entryTime
-              )
-          });
+        // ------------------------------------------------
+        // ASSETS
+        // ------------------------------------------------
 
-          continue;
+        const assets = [
+            "EUR/USD",
+            "GBP/USD",
+            "USD/JPY",
+            "AUD/USD"
+        ];
+
+
+        // ------------------------------------------------
+        // SCAN ALL ASSETS
+        // ------------------------------------------------
+
+        for (const asset of assets) {
+
+            try {
+
+                const candles =
+                    await getCandles(
+                        asset
+                    );
+
+                if (
+                    !candles ||
+                    candles.length < 60
+                ) {
+
+                    results.push({
+                        asset,
+                        status:
+                            "NOT_ENOUGH_CANDLES"
+                    });
+
+                    continue;
+                }
+
+
+                // ----------------------------------------
+                // ONLY CLOSED CANDLE
+                // ----------------------------------------
+
+                const latestClosed =
+                    getLatestClosedCandle(
+                        candles
+                    );
+
+                if (!latestClosed) {
+
+                    results.push({
+                        asset,
+                        status:
+                            "NO_CLOSED_CANDLE"
+                    });
+
+                    continue;
+                }
+
+
+                // ----------------------------------------
+                // REMOVE CURRENT IN-PROGRESS CANDLE
+                // ----------------------------------------
+
+                const analysisCandles =
+                    candles.filter(
+                        candle =>
+                            candle.time.getTime() <=
+                            latestClosed.time.getTime()
+                    );
+
+
+                // ----------------------------------------
+                // ANALYZE
+                // ----------------------------------------
+
+                const signal =
+                    analyze(
+                        asset,
+                        analysisCandles,
+                        Number(
+                            process.env.MIN_SIGNAL_SCORE ||
+                            2
+                        )
+                    );
+
+
+                if (!signal) {
+
+                    results.push({
+                        asset,
+                        status:
+                            "NO_SIGNAL"
+                    });
+
+                    continue;
+                }
+
+
+                // ----------------------------------------
+                // FORCE ENTRY = NEXT + 1 MINUTE
+                //
+                // Source candle:
+                // 23:30
+                //
+                // Entry:
+                // 23:32
+                //
+                // Expiration:
+                // 23:33
+                // ----------------------------------------
+
+                const sourceTime =
+                    latestClosed.time;
+
+                const entryTime =
+                    new Date(
+                        sourceTime.getTime() +
+                        2 * 60 * 1000
+                    );
+
+                const expiryTime =
+                    new Date(
+                        entryTime.getTime() +
+                        EXPIRATION_MINUTES *
+                        60 *
+                        1000
+                    );
+
+
+                // ----------------------------------------
+                // SIGNAL MUST BE FUTURE
+                // ----------------------------------------
+
+                if (
+                    entryTime.getTime() <=
+                    now.getTime()
+                ) {
+
+                    results.push({
+                        asset,
+                        status:
+                            "ENTRY_TIME_PASSED",
+                        entryTime:
+                            entryTime.toISOString()
+                    });
+
+                    continue;
+                }
+
+
+                // ----------------------------------------
+                // SIGNAL KEY
+                // ----------------------------------------
+
+                const signalKey =
+                    [
+                        asset,
+                        signal.direction,
+                        entryTime.toISOString()
+                    ].join("_");
+
+
+                // ----------------------------------------
+                // DUPLICATE CHECK
+                // ----------------------------------------
+
+                if (
+                    await signalExists(
+                        signalKey
+                    )
+                ) {
+
+                    results.push({
+                        asset,
+                        status:
+                            "DUPLICATE",
+                        direction:
+                            signal.direction,
+                        entryTime:
+                            entryTime.toISOString()
+                    });
+
+                    continue;
+                }
+
+
+                // ----------------------------------------
+                // SAVE SIGNAL
+                //
+                // Result remains PENDING only as
+                // database record.
+                //
+                // It is NOT used for WIN/LOSS.
+                // ----------------------------------------
+
+                const {
+                    data: inserted,
+                    error: insertError
+                } = await supabase
+                    .from("signals")
+                    .insert({
+                        asset,
+
+                        direction:
+                            signal.direction,
+
+                        score:
+                            signal.score,
+
+                        signal_key:
+                            signalKey,
+
+                        signal_time:
+                            now.toISOString(),
+
+                        entry_time:
+                            entryTime.toISOString(),
+
+                        entry_price:
+                            null,
+
+                        result:
+                            "PENDING",
+
+                        reasons:
+                            signal.reasons,
+
+                        timeframe:
+                            TIMEFRAME,
+
+                        expiration_minutes:
+                            EXPIRATION_MINUTES,
+
+                        expiry_time:
+                            expiryTime.toISOString(),
+
+                        source_candle_time:
+                            sourceTime.toISOString(),
+
+                        result_price:
+                            null,
+
+                        result_time:
+                            null,
+
+                        settled_at:
+                            null
+                    })
+                    .select()
+                    .single();
+
+
+                if (insertError) {
+                    throw insertError;
+                }
+
+
+                // ----------------------------------------
+                // SEND TELEGRAM
+                // ----------------------------------------
+
+                const telegramText =
+                    formatSignal({
+                        ...signal,
+
+                        entryTime:
+                            entryTime.toISOString(),
+
+                        expiryTime:
+                            expiryTime.toISOString()
+                    });
+
+                await sendTelegram(
+                    telegramText
+                );
+
+
+                // ----------------------------------------
+                // RESULT
+                // ----------------------------------------
+
+                results.push({
+                    asset,
+                    status:
+                        "SIGNAL_SENT",
+                    direction:
+                        signal.direction,
+                    score:
+                        signal.score,
+                    entryTime:
+                        entryTime.toISOString(),
+                    expiration:
+                        EXPIRATION_MINUTES,
+                    signalId:
+                        inserted.id
+                });
+
+            }
+            catch (error) {
+
+                results.push({
+                    asset,
+                    status:
+                        "ERROR",
+                    error:
+                        error.message
+                });
+            }
         }
 
-        if (result.invalidTime) {
 
-          results.push({
+        // ------------------------------------------------
+        // RESPONSE
+        // ------------------------------------------------
 
-            asset,
+        return res
+            .status(200)
+            .json({
 
-            status:
-              "INVALID_TIME",
+                ok: true,
 
-            entryTime:
-              result.entryTime,
+                mode:
+                    "SIGNAL_ONLY",
 
-            entryWIB:
-              formatWIB(
-                result.entryTime
-              ),
+                timeframe:
+                    TIMEFRAME,
 
-            error:
-              result.error
-          });
+                expirationMinutes:
+                    EXPIRATION_MINUTES,
 
-          continue;
-        }
+                timezone:
+                    TIMEZONE,
 
-        if (!result.signal) {
+                results
+            });
 
-          results.push({
-
-            asset,
-
-            status:
-              "NO_SIGNAL"
-          });
-
-          continue;
-        }
-
-        const signal =
-          result.signal;
-
-        candidates.push(
-          signal
-        );
-
-        results.push({
-
-          asset,
-
-          status:
-            "CANDIDATE",
-
-          direction:
-            signal.direction,
-
-          score:
-            signal.score,
-
-          entryTime:
-            signal.entryTime,
-
-          entryWIB:
-            formatWIB(
-              signal.entryTime
-            ),
-
-          sourceCandleWIB:
-            formatWIB(
-              signal.sourceCandleTime
-            )
-        });
-
-      } catch (error) {
-
-        results.push({
-
-          asset,
-
-          status:
-            "ERROR",
-
-          error:
-            error?.message ||
-            String(error)
-        });
-      }
     }
+    catch (error) {
 
+        console.error(error);
 
-    // ==================================================
-    // 3. NO SIGNAL
-    // ==================================================
-
-    if (
-      candidates.length === 0
-    ) {
-
-      return res.status(200).json({
-
-        ok: true,
-
-        status:
-          "NO_SIGNAL",
-
-        timeframe:
-          TIMEFRAME,
-
-        timezone:
-          TIMEZONE,
-
-        correction:
-          "-2 hours OTCharts",
-
-        expirationMinutes:
-          EXPIRATION_MINUTES,
-
-        newSignals:
-          0,
-
-        results
-      });
+        return res
+            .status(500)
+            .json({
+                ok: false,
+                error:
+                    error.message
+            });
     }
-
-
-    // ==================================================
-    // 4. PILIH SCORE TERTINGGI
-    // ==================================================
-
-    candidates.sort(
-      (a, b) => {
-
-        if (
-          b.score !== a.score
-        ) {
-
-          return (
-            b.score -
-            a.score
-          );
-        }
-
-        return (
-          new Date(
-            a.entryTime
-          ).getTime() -
-          new Date(
-            b.entryTime
-          ).getTime()
-        );
-      }
-    );
-
-    const selected =
-      candidates[0];
-
-
-    // ==================================================
-    // 5. SIGNAL KEY
-    // ==================================================
-
-    const signalKey =
-      `${selected.asset}|` +
-      `${selected.direction}|` +
-      `${selected.entryTime}`;
-
-
-    // ==================================================
-    // 6. CEK DUPLIKAT
-    // ==================================================
-
-    const {
-      data: existing,
-      error: existingError
-    } =
-      await supabase
-        .from("signals")
-        .select("id")
-        .eq(
-          "signal_key",
-          signalKey
-        )
-        .limit(1);
-
-    if (existingError) {
-
-      throw new Error(
-        `Supabase duplicate: ${existingError.message}`
-      );
-    }
-
-    if (
-      existing &&
-      existing.length > 0
-    ) {
-
-      return res.status(200).json({
-
-        ok: true,
-
-        status:
-          "DUPLICATE",
-
-        existingId:
-          existing[0].id,
-
-        results
-      });
-    }
-
-
-    // ==================================================
-    // 7. INSERT PENDING
-    // ==================================================
-
-    const {
-      data: inserted,
-      error: insertError
-    } =
-      await supabase
-        .from("signals")
-        .insert({
-
-          asset:
-            selected.asset,
-
-          timeframe:
-            TIMEFRAME,
-
-          direction:
-            selected.direction,
-
-          score:
-            selected.score,
-
-          signal_key:
-            signalKey,
-
-          signal_time:
-            selected.signalTime,
-
-          source_candle_time:
-            selected.sourceCandleTime,
-
-          entry_time:
-            selected.entryTime,
-
-          expiry_time:
-            selected.expiryTime,
-
-          entry_price:
-            selected.entryPrice,
-
-          expiration_minutes:
-            EXPIRATION_MINUTES,
-
-          result:
-            "PENDING",
-
-          reasons:
-            selected.reasons
-        })
-        .select()
-        .single();
-
-    if (insertError) {
-
-      throw new Error(
-        `Supabase insert: ${insertError.message}`
-      );
-    }
-
-
-    // ==================================================
-    // 8. TELEGRAM
-    // ==================================================
-
-    await sendTelegram(
-      formatSignal(
-        selected
-      )
-    );
-
-
-    // ==================================================
-    // 9. RESPONSE
-    // ==================================================
-
-    return res.status(200).json({
-
-      ok: true,
-
-      status:
-        "SIGNAL_CREATED",
-
-      timeframe:
-        TIMEFRAME,
-
-      timezone:
-        TIMEZONE,
-
-      correction:
-        "-2 hours OTCharts",
-
-      entryMode:
-        "NEXT_PLUS_1_MINUTE",
-
-      expirationMinutes:
-        EXPIRATION_MINUTES,
-
-      newSignals:
-        1,
-
-      selected: {
-
-        id:
-          inserted.id,
-
-        asset:
-          selected.asset,
-
-        direction:
-          selected.direction,
-
-        score:
-          selected.score,
-
-        entryTime:
-          selected.entryTime,
-
-        entryWIB:
-          formatWIB(
-            selected.entryTime
-          ),
-
-        expiryTime:
-          selected.expiryTime,
-
-        expiryWIB:
-          formatWIB(
-            selected.expiryTime
-          ),
-
-        sourceCandleWIB:
-          formatWIB(
-            selected.sourceCandleTime
-          ),
-
-        result:
-          "PENDING"
-      },
-
-      results
-    });
-
-  } catch (error) {
-
-    console.error(
-      "SCAN ERROR:",
-      error
-    );
-
-    return res.status(500).json({
-
-      ok: false,
-
-      step:
-        "SCAN",
-
-      error:
-        error?.message ||
-        String(error)
-    });
-  }
 }
