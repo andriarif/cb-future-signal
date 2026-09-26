@@ -1,19 +1,17 @@
 // api/scan.js
 // CB Future Signal - SIGNAL ONLY + IMAGE
-//
-// Strategy:
 // M1 EMA50 + RSI14 + Candle Confirmation
 //
-// Features:
+// FINAL:
 // - Scan 4 OTC pairs
 // - Select 1 best signal
 // - Cooldown 5 minutes
-// - Telegram sends IMAGE + CAPTION
-// - No Entry Price
-// - No Expiration Price
-// - No Tick Price
+// - Telegram: IMAGE + CLEAN CAPTION
+// - No entry price
+// - No expiry price
+// - No tick
 // - No WIN / LOSS
-// - No Settlement
+// - No settlement
 // - Timezone Asia/Jakarta
 
 import { createClient } from "@supabase/supabase-js";
@@ -34,10 +32,8 @@ const TIMEFRAME = "M1";
 
 const EXPIRATION_MINUTES = 1;
 
-// Cooldown antar signal
 const COOLDOWN_MINUTES = 5;
 
-// OTCharts OTC timestamp correction
 const OTCHARTS_CORRECTION_MS =
     -2 * 60 * 60 * 1000;
 
@@ -56,15 +52,6 @@ const ASSETS = [
 
 // ======================================================
 // TELEGRAM IMAGE
-// ======================================================
-//
-// File berada di:
-// api/signal-buy.jpg
-// api/signal-sell.jpg
-//
-// Repository:
-// andriarif/cb-future-signal
-//
 // ======================================================
 
 const BUY_IMAGE_URL =
@@ -85,7 +72,7 @@ const supabase = createClient(
 
 
 // ======================================================
-// SYMBOL HELPER
+// SYMBOL
 // ======================================================
 
 function symbolFor(asset) {
@@ -98,7 +85,7 @@ function symbolFor(asset) {
 
 
 // ======================================================
-// OTCHARTS TIME CORRECTION
+// CORRECT OTCHARTS TIME
 // ======================================================
 
 function correctCandleTimes(candles) {
@@ -117,7 +104,7 @@ function correctCandleTimes(candles) {
 
 
 // ======================================================
-// GET M1 CANDLES
+// GET CANDLES
 // ======================================================
 
 async function getCandles(asset) {
@@ -196,7 +183,7 @@ function formatWIB(date) {
 
 
 // ======================================================
-// GET LATEST CLOSED M1 CANDLE
+// LATEST CLOSED CANDLE
 // ======================================================
 
 function getLatestClosedCandle(
@@ -235,7 +222,7 @@ function getLatestClosedCandle(
 
 
 // ======================================================
-// CHECK DUPLICATE SIGNAL
+// DUPLICATE CHECK
 // ======================================================
 
 async function signalExists(
@@ -273,7 +260,7 @@ async function signalExists(
 
 
 // ======================================================
-// CHECK 5 MINUTE COOLDOWN
+// COOLDOWN CHECK
 // ======================================================
 
 async function getCooldownStatus() {
@@ -305,7 +292,6 @@ async function getCooldownStatus() {
     }
 
 
-    // Belum pernah ada signal
     if (
         !data ||
         data.length === 0
@@ -327,12 +313,8 @@ async function getCooldownStatus() {
         ).getTime();
 
 
-    const now =
-        Date.now();
-
-
     const elapsed =
-        now -
+        Date.now() -
         lastSignalTime;
 
 
@@ -347,15 +329,12 @@ async function getCooldownStatus() {
         cooldownMs
     ) {
 
-        const remainingMs =
-            cooldownMs -
-            elapsed;
-
-
         const remainingMinutes =
             Math.ceil(
-                remainingMs /
-                60000
+                (
+                    cooldownMs -
+                    elapsed
+                ) / 60000
             );
 
 
@@ -378,7 +357,7 @@ async function getCooldownStatus() {
 
 
 // ======================================================
-// TELEGRAM CAPTION
+// CLEAN TELEGRAM CAPTION
 // ======================================================
 
 function formatSignal(signal) {
@@ -403,48 +382,91 @@ function formatSignal(signal) {
             : [];
 
 
+    let reasonLines = [];
+
+
+    for (
+        const reason of reasons
+    ) {
+
+        let cleanReason =
+            String(reason);
+
+
+        // ----------------------------------------------
+        // Bahasa Indonesia → English / clean
+        // ----------------------------------------------
+
+        cleanReason =
+            cleanReason
+                .replace(
+                    "Harga di atas EMA50",
+                    "Above EMA50"
+                )
+                .replace(
+                    "Harga di bawah EMA50",
+                    "Below EMA50"
+                )
+                .replace(
+                    "Candle bullish",
+                    "Bullish candle"
+                )
+                .replace(
+                    "Candle bearish",
+                    "Bearish candle"
+                );
+
+
+        // RSI naik 52.1
+        cleanReason =
+            cleanReason.replace(
+                /^RSI naik\s*/i,
+                "RSI ↑ "
+            );
+
+
+        // RSI turun 52.1
+        cleanReason =
+            cleanReason.replace(
+                /^RSI turun\s*/i,
+                "RSI ↓ "
+            );
+
+
+        reasonLines.push(
+            `• ${cleanReason}`
+        );
+    }
+
+
     const reasonText =
-        reasons
-            .map(
-                reason =>
-                    `🔎 ${reason}`
-            )
-            .join("\n");
+        reasonLines.join("\n");
 
 
     return (
-`━━━━━━━━━━━━━━━━━━
-⚡ SIGNAL
-━━━━━━━━━━━━━━━━━━
+`⚡ SIGNAL
 
 🌐 ${signal.asset} OTC
+⏱ M1 • 1 Minute
 
-Timeframe: M1
-⏱️ Expiration: 1 minute
-
-⏰ Entry:
-${formatWIB(
+🕐 Entry: ${formatWIB(
     new Date(
         signal.entryTime
     )
 )} WIB
 
-${emoji} Direction:
-${direction}
+${emoji} ${direction}
 
-📊 Confirmation:
-${signal.score}/10
-
+📊 Confirmation: ${signal.score}/10
 ${reasonText}
 
-⚠️ Entry sesuai waktu signal
-━━━━━━━━━━━━━━━━━━`
+⚠️ Enter at signal time`
     );
 }
 
 
 // ======================================================
-// SEND TELEGRAM PHOTO + CAPTION
+// SEND TELEGRAM IMAGE
 // ======================================================
 
 async function sendTelegramSignal(
@@ -594,7 +616,7 @@ export default async function handler(
 
 
         // ==================================================
-        // CHECK COOLDOWN
+        // COOLDOWN
         // ==================================================
 
         const cooldown =
@@ -623,37 +645,8 @@ export default async function handler(
                     remainingMinutes:
                         cooldown.remainingMinutes,
 
-                    lastSignal: {
-
-                        asset:
-                            cooldown
-                                .lastSignal
-                                .asset,
-
-                        direction:
-                            cooldown
-                                .lastSignal
-                                .direction,
-
-                        score:
-                            cooldown
-                                .lastSignal
-                                .score,
-
-                        signalTime:
-                            cooldown
-                                .lastSignal
-                                .signal_time,
-
-                        entryTime:
-                            cooldown
-                                .lastSignal
-                                .entry_time
-
-                    },
-
                     message:
-                        "Masih dalam cooldown. Belum mencari signal baru."
+                        "Cooldown aktif. Menunggu signal berikutnya."
 
                 });
         }
@@ -676,11 +669,12 @@ export default async function handler(
 
         const candidates = [];
 
+
         const scanResults = [];
 
 
         // ==================================================
-        // SCAN 4 OTC PAIRS
+        // SCAN 4 PAIRS
         // ==================================================
 
         for (
@@ -688,10 +682,6 @@ export default async function handler(
         ) {
 
             try {
-
-                // ------------------------------------------
-                // GET CANDLES
-                // ------------------------------------------
 
                 const candles =
                     await getCandles(
@@ -717,10 +707,6 @@ export default async function handler(
                 }
 
 
-                // ------------------------------------------
-                // LATEST CLOSED CANDLE
-                // ------------------------------------------
-
                 const latestClosed =
                     getLatestClosedCandle(
                         candles
@@ -744,10 +730,6 @@ export default async function handler(
                 }
 
 
-                // ------------------------------------------
-                // CLOSED CANDLES ONLY
-                // ------------------------------------------
-
                 const analysisCandles =
                     candles.filter(
                         candle =>
@@ -755,10 +737,6 @@ export default async function handler(
                             latestClosed.time.getTime()
                     );
 
-
-                // ------------------------------------------
-                // ANALYZE
-                // ------------------------------------------
 
                 const signal =
                     analyze(
@@ -785,17 +763,13 @@ export default async function handler(
                 }
 
 
-                // ------------------------------------------
-                // SOURCE CANDLE
-                // ------------------------------------------
+                // ==========================================
+                // ENTRY +2 MINUTES
+                // ==========================================
 
                 const sourceTime =
                     latestClosed.time;
 
-
-                // ------------------------------------------
-                // ENTRY = SOURCE + 2 MINUTES
-                // ------------------------------------------
 
                 const entryTime =
                     new Date(
@@ -803,10 +777,6 @@ export default async function handler(
                         2 * 60 * 1000
                     );
 
-
-                // ------------------------------------------
-                // EXPIRATION = 1 MINUTE
-                // ------------------------------------------
 
                 const expiryTime =
                     new Date(
@@ -816,10 +786,6 @@ export default async function handler(
                         1000
                     );
 
-
-                // ------------------------------------------
-                // ENTRY MUST BE FUTURE
-                // ------------------------------------------
 
                 if (
                     entryTime.getTime() <=
@@ -838,10 +804,6 @@ export default async function handler(
                     continue;
                 }
 
-
-                // ------------------------------------------
-                // ADD CANDIDATE
-                // ------------------------------------------
 
                 candidates.push({
 
@@ -931,7 +893,6 @@ export default async function handler(
         candidates.sort(
             (a, b) => {
 
-                // Score tertinggi
                 if (
                     b.score !==
                     a.score
@@ -944,8 +905,6 @@ export default async function handler(
                 }
 
 
-                // Jika score sama,
-                // entry paling dekat
                 return (
                     new Date(
                         a.entryTime
@@ -1008,10 +967,7 @@ export default async function handler(
                         bestSignal.direction,
 
                     score:
-                        bestSignal.score,
-
-                    entryTime:
-                        bestSignal.entryTime
+                        bestSignal.score
 
                 });
         }
