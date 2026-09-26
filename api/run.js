@@ -1,8 +1,16 @@
-const RUN_SECRET = process.env.RUN_SECRET || "";
+// api/run.js
+// CB Future Signal - RUNNER FINAL
+// Hanya menjalankan /api/scan
+// Tidak menjalankan settlement / WIN / LOSS
+
+const RUN_SECRET =
+  process.env.RUN_SECRET || "";
 
 function getOrigin(req) {
+
   const forwardedProto =
-    req.headers["x-forwarded-proto"] || "https";
+    req.headers["x-forwarded-proto"] ||
+    "https";
 
   const host =
     req.headers["x-forwarded-host"] ||
@@ -11,93 +19,145 @@ function getOrigin(req) {
   return `${forwardedProto}://${host}`;
 }
 
-async function callEndpoint(url) {
-  const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      "User-Agent": "CB-Future-Signal-Runner"
-    }
-  });
 
-  const text = await response.text();
+async function callEndpoint(
+  url,
+  secret
+) {
+
+  const headers = {
+    "User-Agent":
+      "CB-Future-Signal-Runner"
+  };
+
+  // Kirim RUN_SECRET ke /api/scan
+  if (secret) {
+    headers["x-run-secret"] = secret;
+  }
+
+  const response =
+    await fetch(url, {
+      method: "GET",
+      headers
+    });
+
+  const text =
+    await response.text();
 
   let data;
 
   try {
+
     data = JSON.parse(text);
+
   } catch {
+
     data = {
       raw: text
     };
+
   }
 
   return {
-    httpStatus: response.status,
-    ok: response.ok,
+    httpStatus:
+      response.status,
+
+    ok:
+      response.ok,
+
     data
   };
 }
 
-export default async function handler(req, res) {
+
+export default async function handler(
+  req,
+  res
+) {
+
   try {
-    /*
-     * Optional security.
-     *
-     * Kalau RUN_SECRET belum dibuat,
-     * endpoint tetap bisa dijalankan untuk testing.
-     */
+
+    // ==================================================
+    // CHECK RUN SECRET
+    // ==================================================
+
     if (RUN_SECRET) {
+
       const suppliedSecret =
         req.headers["x-run-secret"] ||
         req.query?.secret ||
         "";
 
-      if (suppliedSecret !== RUN_SECRET) {
-        return res.status(401).json({
-          ok: false,
-          error: "UNAUTHORIZED"
-        });
+      if (
+        suppliedSecret !==
+        RUN_SECRET
+      ) {
+
+        return res
+          .status(401)
+          .json({
+            ok: false,
+            error:
+              "UNAUTHORIZED"
+          });
       }
     }
 
-    const origin = getOrigin(req);
+
+    const origin =
+      getOrigin(req);
+
 
     // ==================================================
-    // 1. SCAN SIGNAL
+    // SCAN SIGNAL ONLY
     // ==================================================
 
-    const scan = await callEndpoint(
-      `${origin}/api/scan`
-    );
+    const scan =
+      await callEndpoint(
+        `${origin}/api/scan`,
+        RUN_SECRET
+      );
 
-    // ==================================================
-    // 2. SETTLEMENT
-    // ==================================================
-
-    const settle = await callEndpoint(
-      `${origin}/api/settle`
-    );
 
     // ==================================================
     // RESULT
     // ==================================================
 
-    return res.status(200).json({
-      ok: scan.ok && settle.ok,
+    return res
+      .status(
+        scan.ok ? 200 : 500
+      )
+      .json({
 
-      runAt:
-        new Date().toISOString(),
+        ok:
+          scan.ok,
 
-      scan: scan.data,
+        mode:
+          "SIGNAL_ONLY",
 
-      settle: settle.data
-    });
+        runAt:
+          new Date().toISOString(),
 
-  } catch (error) {
-    return res.status(500).json({
-      ok: false,
-      step: "RUN",
-      error: error.message
-    });
+        scan:
+          scan.data
+
+      });
+
+  }
+  catch (error) {
+
+    return res
+      .status(500)
+      .json({
+
+        ok: false,
+
+        step:
+          "RUN",
+
+        error:
+          error.message
+
+      });
   }
 }
