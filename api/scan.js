@@ -1,510 +1,495 @@
 import { createClient } from "@supabase/supabase-js";
 
-import {
-  normalizeCandles,
-  analyze,
-  candleKey,
-  formatSignal
-} from "../signal-engine.js";
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY =
+  process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
+const OTCHARTS_API_KEY = process.env.OTCHARTS_API_KEY;
+const TELEGRAM_BOT_TOKEN =
+  process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHAT_ID =
+  process.env.TELEGRAM_CHAT_ID;
+
+const MIN_SCORE = Number(
+  process.env.MIN_SIGNAL_SCORE || 2
 );
 
-const ASSETS = (
-  process.env.ASSETS ||
-  "EUR/USD,GBP/USD,USD/JPY"
-)
-  .split(",")
-  .map(x => x.trim())
-  .filter(Boolean);
+// Tampilan waktu Telegram.
+// Sesuai contoh gambar: UTC +6
+const DISPLAY_UTC_OFFSET = Number(
+  process.env.DISPLAY_UTC_OFFSET || 6
+);
 
-function json(data, status = 200) {
-  return new Response(
-    JSON.stringify(data, null, 2),
-    {
-      status,
-      headers: {
-        "content-type": "application/json"
-      }
+const ASSETS = [
+  "EUR/USD",
+  "GBP/USD",
+  "USD/JPY"
+];
+
+const supabase = createClient(
+  SUPABASE_URL,
+  SUPABASE_SERVICE_ROLE_KEY
+);
+
+// =====================================================
+// OTCHARTS
+// =====================================================
+
+function symbolFor(asset) {
+  return `${asset.replace("/", "")}_otc`;
+}
+
+async function getCandles(asset) {
+  const url =
+    `https://otcharts.com/v1/candles` +
+    `?venue=otc` +
+    `&symbol=${encodeURIComponent(symbolFor(asset))}` +
+    `&tf=60` +
+    `&limit=250`;
+
+  const response = await fetch(url, {
+    headers: {
+      Authorization:
+        `Bearer ${OTCHARTS_API_KEY}`
     }
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `OTCharts HTTP ${response.status}: ${await response.text()}`
+    );
+  }
+
+  const data = await response.json();
+
+  return Array.isArray(data)
+    ? data
+    : (data.candles || data.data || []);
+}
+
+// =====================================================
+// NORMALIZE CANDLE
+// =====================================================
+
+function normalizeCandle(c) {
+  return {
+    time: Number(
+      c.time ??
+      c.timestamp ??
+      c.t
+    ),
+    open: Number(
+      c.open ??
+      c.o
+    ),
+    high: Number(
+      c.high ??
+      c.h
+    ),
+    low: Number(
+      c.low ??
+      c.l
+    ),
+    close: Number(
+      c.close ??
+      c.c
+    )
+  };
+}
+
+// =====================================================
+// TELEGRAM
+// =====================================================
+
+async function sendTelegram(text) {
+  const url =
+    `https://api.telegram.org/bot` +
+    `${TELEGRAM_BOT_TOKEN}/sendMessage`;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      chat_id: TELEGRAM_CHAT_ID,
+      text
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `Telegram HTTP ${response.status}: ${await response.text()}`
+    );
+  }
+}
+
+// =====================================================
+// TIME FORMAT
+// =====================================================
+
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
+function formatDisplayDate(timestamp) {
+  const date = new Date(
+    timestamp + DISPLAY_UTC_OFFSET * 60 * 60 * 1000
+  );
+
+  return (
+    `${date.getUTCFullYear()}.` +
+    `${pad2(date.getUTCMonth() + 1)}.` +
+    `${pad2(date.getUTCDate())}`
   );
 }
 
+function formatDisplayTime(timestamp) {
+  const date = new Date(
+    timestamp + DISPLAY_UTC_OFFSET * 60 * 60 * 1000
+  );
 
-// ============================================================
-// OTCHARTS
-// ============================================================
-
-async function getCandles(asset) {
-
-  const key =
-    process.env.OTCHARTS_API_KEY;
-
-  if (!key) {
-    throw new Error(
-      "OTCHARTS_API_KEY belum diatur."
-    );
-  }
-
-  const symbol =
-    asset.replace("/", "") + "_otc";
-
-  const url =
-    new URL(
-      "https://otcharts.com/v1/candles"
-    );
-
-  url.searchParams.set("venue", "otc");
-  url.searchParams.set("symbol", symbol);
-  url.searchParams.set("tf", "60");
-  url.searchParams.set("limit", "250");
-
-  try {
-
-    const response =
-      await fetch(url, {
-        method: "GET",
-        headers: {
-          "accept": "application/json",
-          "authorization":
-            `Bearer ${key}`
-        },
-        cache: "no-store"
-      });
-
-    if (!response.ok) {
-
-      const body =
-        await response.text();
-
-      throw new Error(
-        `OTCharts HTTP ${response.status}: ${body}`
-      );
-    }
-
-    const data =
-      await response.json();
-
-    if (!Array.isArray(data.candles)) {
-      throw new Error(
-        "OTCharts candles tidak valid."
-      );
-    }
-
-    return data.candles;
-
-  } catch (error) {
-
-    throw new Error(
-      `STEP=OTCHARTS | ` +
-      `asset=${asset} | ` +
-      `${error.message}`
-    );
-  }
+  return (
+    `${pad2(date.getUTCHours())}:` +
+    `${pad2(date.getUTCMinutes())}`
+  );
 }
 
+// =====================================================
+// SIGNAL ENGINE
+// =====================================================
 
-// ============================================================
-// TELEGRAM
-// ============================================================
-
-async function sendTelegram(message) {
-
-  const token =
-    process.env.TELEGRAM_BOT_TOKEN;
-
-  const chatId =
-    process.env.TELEGRAM_CHAT_ID;
-
-  if (!token || !chatId) {
-    throw new Error(
-      "STEP=TELEGRAM_CONFIG | " +
-      "Token atau Chat ID belum diatur."
-    );
-  }
-
-  try {
-
-    const response =
-      await fetch(
-        `https://api.telegram.org/bot${token}/sendMessage`,
-        {
-          method: "POST",
-
-          headers: {
-            "content-type":
-              "application/json"
-          },
-
-          body: JSON.stringify({
-            chat_id: chatId,
-            text: message,
-            parse_mode: "HTML",
-            disable_web_page_preview: true
-          })
-        }
-      );
-
-    if (!response.ok) {
-
-      const body =
-        await response.text();
-
-      throw new Error(
-        `Telegram HTTP ${response.status}: ${body}`
-      );
-    }
-
-    return response.json();
-
-  } catch (error) {
-
-    throw new Error(
-      `STEP=TELEGRAM | ${error.message}`
-    );
-  }
-}
-
-
-// ============================================================
-// PROCESS ASSET
-// ============================================================
-
-async function processAsset(asset) {
-
-  // ----------------------------------------------------------
-  // 1. OTCHARTS
-  // ----------------------------------------------------------
-
-  const raw =
+async function analyzeAsset(asset) {
+  const rawCandles =
     await getCandles(asset);
 
-
-  // ----------------------------------------------------------
-  // 2. NORMALIZE
-  // ----------------------------------------------------------
-
-  let candles;
-
-  try {
-
-    candles =
-      normalizeCandles(raw);
-
-  } catch (error) {
-
-    throw new Error(
-      `STEP=NORMALIZE | ${error.message}`
+  const candles = rawCandles
+    .map(normalizeCandle)
+    .filter(c =>
+      Number.isFinite(c.time) &&
+      Number.isFinite(c.open) &&
+      Number.isFinite(c.high) &&
+      Number.isFinite(c.low) &&
+      Number.isFinite(c.close)
+    )
+    .sort(
+      (a, b) => a.time - b.time
     );
-  }
 
-
-  if (candles.length < 220) {
-
+  if (candles.length < 60) {
     return {
       asset,
-      status: "SKIP",
-      candleCount: candles.length,
-      reason:
-        "Candle M1 kurang dari 220."
+      signal: null,
+      error:
+        `Candle tidak cukup: ${candles.length}`
     };
   }
 
+  /*
+   * signal-engine.js adalah engine utama
+   * yang sudah kita buat sebelumnya.
+   */
+  const engine =
+    await import("../signal-engine.js");
 
-  // ----------------------------------------------------------
-  // 3. ANALYZE
-  // ----------------------------------------------------------
-
-  let signal;
-
-  try {
-
-    signal =
-      analyze(
-        asset,
-        candles,
-        Number(
-          process.env.MIN_SCORE || 2
-        )
-      );
-
-  } catch (error) {
-
-    throw new Error(
-      `STEP=ANALYZE | ${error.message}`
+  const analysis =
+    engine.analyze(
+      asset,
+      candles,
+      MIN_SCORE
     );
-  }
 
-
-  // ----------------------------------------------------------
-  // NO SIGNAL
-  // ----------------------------------------------------------
-
-  if (!signal) {
-
+  if (!analysis) {
     return {
       asset,
-      status: "NO_SIGNAL",
-      candleCount: candles.length
+      signal: null
     };
   }
-
-
-  // ----------------------------------------------------------
-  // 4. SIGNAL KEY
-  // ----------------------------------------------------------
-
-  const signalKey =
-    `${asset}:` +
-    `${candleKey(signal.signalTime)}:` +
-    `${signal.direction}`;
-
-
-  // ----------------------------------------------------------
-  // 5. SUPABASE CHECK
-  // ----------------------------------------------------------
-
-  let existing;
-
-  try {
-
-    const result =
-      await supabase
-        .from("signals")
-        .select("id")
-        .eq("asset", asset)
-        .eq("signal_key", signalKey)
-        .maybeSingle();
-
-    if (result.error) {
-      throw result.error;
-    }
-
-    existing =
-      result.data;
-
-  } catch (error) {
-
-    throw new Error(
-      `STEP=SUPABASE_CHECK | ` +
-      `${error.message}`
-    );
-  }
-
-
-  // ----------------------------------------------------------
-  // DUPLICATE
-  // ----------------------------------------------------------
-
-  if (existing) {
-
-    return {
-      asset,
-      status: "DUPLICATE",
-      signalKey
-    };
-  }
-
-
-  // ----------------------------------------------------------
-  // 6. INSERT SUPABASE
-  // ----------------------------------------------------------
-
-  const row = {
-
-    asset,
-
-    timeframe:
-      "M1",
-
-    direction:
-      signal.direction,
-
-    score:
-      signal.score,
-
-    signal_key:
-      signalKey,
-
-    signal_time:
-      signal.signalTime,
-
-    entry_time:
-      signal.entryTime,
-
-    entry_price:
-      signal.entryPrice,
-
-    result:
-      "PENDING",
-
-    reasons:
-      signal.reasons
-  };
-
-
-  try {
-
-    const result =
-      await supabase
-        .from("signals")
-        .insert(row);
-
-    if (result.error) {
-      throw result.error;
-    }
-
-  } catch (error) {
-
-    throw new Error(
-      `STEP=SUPABASE_INSERT | ` +
-      `${error.message}`
-    );
-  }
-
-
-  // ----------------------------------------------------------
-  // 7. TELEGRAM
-  // ----------------------------------------------------------
-
-  try {
-
-    await sendTelegram(
-      formatSignal(
-        signal,
-        process.env.TELEGRAM_TIMEZONE ||
-        "Asia/Jakarta"
-      )
-    );
-
-  } catch (error) {
-
-    throw new Error(
-      `STEP=TELEGRAM_SEND | ` +
-      `${error.message}`
-    );
-  }
-
-
-  // ----------------------------------------------------------
-  // SUCCESS
-  // ----------------------------------------------------------
 
   return {
-
     asset,
-
-    status:
-      "SIGNAL_SENT",
-
-    direction:
-      signal.direction,
-
-    score:
-      signal.score,
-
-    entryTime:
-      signal.entryTime,
-
-    entryPrice:
-      signal.entryPrice,
-
-    reasons:
-      signal.reasons
+    signal: analysis
   };
 }
 
+// =====================================================
+// MAIN
+// =====================================================
 
-// ============================================================
-// GET /api/scan
-// ============================================================
+export default async function handler(req, res) {
+  const scannedAt =
+    new Date().toISOString();
 
-export async function GET(request) {
+  const results = [];
+  const newSignals = [];
 
   try {
-
-    const url =
-      new URL(request.url);
-
-    const secret =
-      url.searchParams.get("secret") ||
-      request.headers.get(
-        "x-cron-secret"
-      );
-
-    if (
-      process.env.CRON_SECRET &&
-      secret !== process.env.CRON_SECRET
-    ) {
-
-      return json(
-        {
-          ok: false,
-          error: "Unauthorized"
-        },
-        401
-      );
-    }
-
-
-    const results = [];
-
-
-    for (
-      const asset of ASSETS
-    ) {
-
+    for (const asset of ASSETS) {
       try {
+        const result =
+          await analyzeAsset(asset);
 
-        results.push(
-          await processAsset(asset)
-        );
+        if (result.error) {
+          results.push({
+            asset,
+            status: "ERROR",
+            error: result.error
+          });
 
-      } catch (error) {
+          continue;
+        }
+
+        if (!result.signal) {
+          results.push({
+            asset,
+            status: "NO_SIGNAL"
+          });
+
+          continue;
+        }
+
+        const signal =
+          result.signal;
+
+        const direction =
+          String(
+            signal.direction || ""
+          ).toUpperCase();
+
+        const entryTime =
+          Number(
+            signal.entryTime
+          );
+
+        const entryPrice =
+          Number(
+            signal.entryPrice
+          );
+
+        const score =
+          Number(
+            signal.score || 0
+          );
+
+        const reasons =
+          Array.isArray(signal.reasons)
+            ? signal.reasons
+            : [];
+
+        if (
+          !direction ||
+          !Number.isFinite(entryTime) ||
+          !Number.isFinite(entryPrice)
+        ) {
+          results.push({
+            asset,
+            status: "ERROR",
+            error:
+              "Signal engine menghasilkan data tidak lengkap."
+          });
+
+          continue;
+        }
+
+        /*
+         * Kunci unik signal.
+         * Mencegah signal yang sama dikirim
+         * berkali-kali saat scanner dipanggil.
+         */
+        const signalKey =
+          `${asset}|${direction}|${entryTime}`;
+
+        // -------------------------------------------------
+        // CHECK DUPLICATE
+        // -------------------------------------------------
+
+        const {
+          data: existing,
+          error: checkError
+        } = await supabase
+          .from("signals")
+          .select("id")
+          .eq(
+            "asset",
+            asset
+          )
+          .eq(
+            "signal_key",
+            signalKey
+          )
+          .maybeSingle();
+
+        if (checkError) {
+          throw new Error(
+            `SUPABASE_CHECK: ${checkError.message}`
+          );
+        }
+
+        if (existing) {
+          results.push({
+            asset,
+            status: "DUPLICATE",
+            direction,
+            score
+          });
+
+          continue;
+        }
+
+        // -------------------------------------------------
+        // INSERT PENDING
+        // -------------------------------------------------
+
+        const {
+          data: inserted,
+          error: insertError
+        } = await supabase
+          .from("signals")
+          .insert({
+            asset,
+            timeframe: "M1",
+            direction,
+            score,
+            signal_key: signalKey,
+            signal_time:
+              new Date().toISOString(),
+            entry_time:
+              new Date(
+                entryTime
+              ).toISOString(),
+            entry_price:
+              entryPrice,
+            result: "PENDING",
+            reasons
+          })
+          .select()
+          .single();
+
+        if (insertError) {
+          throw new Error(
+            `SUPABASE_INSERT: ${insertError.message}`
+          );
+        }
+
+        // -------------------------------------------------
+        // ADD TO FUTURE LIST
+        // -------------------------------------------------
+
+        newSignals.push({
+          id: inserted?.id,
+          asset,
+          direction,
+          score,
+          entryTime,
+          entryPrice,
+          reasons
+        });
 
         results.push({
-
           asset,
+          status: "SIGNAL_READY",
+          direction,
+          score,
+          entryTime:
+            new Date(
+              entryTime
+            ).toISOString(),
+          entryPrice,
+          reasons
+        });
 
-          status:
-            "ERROR",
-
-          error:
-            error.message
+      } catch (error) {
+        results.push({
+          asset,
+          status: "ERROR",
+          error: error.message
         });
       }
     }
 
+    // ===================================================
+    // SEND FUTURE SIGNAL LIST
+    // ===================================================
 
-    return json({
+    if (newSignals.length > 0) {
+      /*
+       * Urutkan berdasarkan waktu entry.
+       */
+      newSignals.sort(
+        (a, b) =>
+          a.entryTime - b.entryTime
+      );
 
+      const first =
+        newSignals[0];
+
+      const displayDate =
+        formatDisplayDate(
+          first.entryTime
+        );
+
+      const lines =
+        newSignals.map(signal => {
+          const emoji =
+            signal.direction === "CALL"
+              ? "🟢"
+              : "🔴";
+
+          const displayTime =
+            formatDisplayTime(
+              signal.entryTime
+            );
+
+          return (
+            `M1 ${signal.asset} (OTC) ` +
+            `${displayTime} ` +
+            `${emoji} ${signal.direction}`
+          );
+        });
+
+      const signalCount =
+        newSignals.length;
+
+      const message =
+`🌐 FUTURE SIGNAL LIST 👑
+
+⏱️ TF: M1 | 🌐 UTC: +${DISPLAY_UTC_OFFSET} | OTC
+📅 Date: ${displayDate}
+📊 Strategy: Forensic Analysis (FREE)
+• Momentum Flow
+
+····························
+
+${lines.join("\n")}
+
+····························
+
+🔺 ${signalCount} signal${signalCount > 1 ? "s" : ""} locked
+Enter exactly at the time shown above.
+
+⚠️ This signal is only for Pocket Option
+
+💗 CB SIGNALS PRO 💗`;
+
+      await sendTelegram(message);
+    }
+
+    return res.status(200).json({
       ok: true,
-
-      scannedAt:
-        new Date().toISOString(),
-
-      assets:
-        ASSETS,
-
-      minScore:
-        Number(
-          process.env.MIN_SCORE || 2
-        ),
-
+      scannedAt,
+      minScore: MIN_SCORE,
+      timezone:
+        `UTC+${DISPLAY_UTC_OFFSET}`,
+      newSignals:
+        newSignals.length,
       results
-
     });
 
   } catch (error) {
-
-    return json(
-      {
-        ok: false,
-        error: error.message
-      },
-      500
-    );
+    return res.status(500).json({
+      ok: false,
+      step: "SCAN",
+      error: error.message
+    });
   }
 }
