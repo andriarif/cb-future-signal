@@ -19,7 +19,7 @@ function symbolFor(asset) {
   return `${asset.replace("/", "")}_otc`;
 }
 
-async function getCandles(asset, limit = 10) {
+async function getCandles(asset, limit = 20) {
   const url =
     `https://otcharts.com/v1/candles` +
     `?venue=otc` +
@@ -98,6 +98,7 @@ export default async function handler(req, res) {
     if (!signals || signals.length === 0) {
       return res.status(200).json({
         ok: true,
+        checked: 0,
         message: "Tidak ada signal PENDING."
       });
     }
@@ -107,44 +108,91 @@ export default async function handler(req, res) {
     for (const signal of signals) {
       try {
         const entryTime = new Date(signal.entry_time).getTime();
-
-        // Tunggu sampai candle entry selesai.
         const now = Date.now();
 
-        if (now < entryTime + 60_000) {
+        // Pastikan waktu entry sudah tercapai.
+        if (now < entryTime) {
           results.push({
             asset: signal.asset,
             status: "WAITING",
             entryTime: signal.entry_time
           });
+
           continue;
         }
 
-        const rawCandles = await getCandles(signal.asset, 10);
+        const rawCandles = await getCandles(signal.asset, 20);
 
         const candles = rawCandles
           .map(normalizeCandle)
           .filter(c =>
             Number.isFinite(c.time) &&
+            Number.isFinite(c.open) &&
+            Number.isFinite(c.high) &&
+            Number.isFinite(c.low) &&
             Number.isFinite(c.close)
           )
           .sort((a, b) => a.time - b.time);
 
-        const target = candles.find(
+        /*
+         * Entry berada pada candle berikutnya.
+         *
+         * Untuk menentukan hasil, kita gunakan candle M1
+         * setelah entry dan mengambil CLOSE candle tersebut.
+         */
+        const targetEntryCandle = candles.find(
           c => c.time * 1000 >= entryTime
         );
 
-        if (!target) {
+        if (!targetEntryCandle) {
           results.push({
             asset: signal.asset,
-            status: "WAITING_CANDLE"
+            status: "WAITING_ENTRY_CANDLE",
+            entryTime: signal.entry_time
           });
+
+          continue;
+        }
+
+        const targetCloseTime =
+          targetEntryCandle.time * 1000 + 60_000;
+
+        // Candle harus sudah benar-benar selesai.
+        if (now < targetCloseTime) {
+          results.push({
+            asset: signal.asset,
+            status: "WAITING_CANDLE_CLOSE",
+            entryTime: signal.entry_time,
+            targetCloseTime: new Date(
+              targetCloseTime
+            ).toISOString()
+          });
+
+          continue;
+        }
+
+        /*
+         * Cari candle yang close-nya digunakan
+         * untuk menentukan WIN / LOSS.
+         */
+        const resultCandle = candles.find(
+          c => c.time * 1000 === targetEntryCandle.time * 1000
+        );
+
+        if (!resultCandle) {
+          results.push({
+            asset: signal.asset,
+            status: "WAITING_RESULT_CANDLE"
+          });
+
           continue;
         }
 
         const entryPrice = Number(signal.entry_price);
-        const closePrice = Number(target.close);
-        const direction = String(signal.direction).toUpperCase();
+        const closePrice = Number(resultCandle.close);
+        const direction = String(
+          signal.direction || ""
+        ).toUpperCase();
 
         let result;
 
@@ -164,6 +212,9 @@ export default async function handler(req, res) {
           result = "LOSS";
         }
 
+        /*
+         * Update database.
+         */
         const { error: updateError } = await supabase
           .from("signals")
           .update({
@@ -177,6 +228,9 @@ export default async function handler(req, res) {
           );
         }
 
+        /*
+         * Telegram result.
+         */
         const emoji =
           result === "WIN"
             ? "✅"
@@ -190,6 +244,7 @@ export default async function handler(req, res) {
 ${signal.asset}
 TF: M1
 Signal: ${direction}
+
 Entry: ${entryPrice}
 Close: ${closePrice}
 
@@ -207,6 +262,7 @@ HASIL: ${emoji} ${result}`;
         });
 
         await sleep(200);
+
       } catch (err) {
         results.push({
           asset: signal.asset,
