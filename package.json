@@ -1,0 +1,11 @@
+{
+  "name": "cb-future-signal-vercel",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vercel dev"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.57.0"
+  }
+}
