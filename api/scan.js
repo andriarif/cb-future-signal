@@ -1,25 +1,50 @@
 // api/scan.js
-// CB Future Signal - SIGNAL ONLY
-// 1 BEST SIGNAL FROM 4 OTC PAIRS
-// Strategy: M1 EMA50 + RSI14 + Candle Confirmation
-// No Entry Price
-// No Expiration Price
-// No WIN / LOSS
-// No Tick Price
-// Timezone: Asia/Jakarta
+// CB Future Signal - SIGNAL ONLY FINAL
+//
+// Strategy:
+// M1 EMA50 + RSI14 + Candle Confirmation
+//
+// Features:
+// - Scan 4 OTC pairs
+// - Select 1 best signal
+// - Cooldown 5 minutes
+// - Telegram SIGNAL ONLY
+// - No entry price
+// - No expiration price
+// - No tick price
+// - No WIN / LOSS
+// - No settlement
+// - Timezone Asia/Jakarta
 
 import { createClient } from "@supabase/supabase-js";
+
 import {
     normalizeCandles,
     analyze
 } from "../signal-engine.js";
 
+
+// ======================================================
+// SETTINGS
+// ======================================================
+
 const TIMEZONE = "Asia/Jakarta";
+
 const TIMEFRAME = "M1";
+
 const EXPIRATION_MINUTES = 1;
 
+// Cooldown antar signal Telegram
+const COOLDOWN_MINUTES = 5;
+
+// OTCharts OTC timestamp correction
 const OTCHARTS_CORRECTION_MS =
     -2 * 60 * 60 * 1000;
+
+
+// ======================================================
+// OTC ASSETS
+// ======================================================
 
 const ASSETS = [
     "EUR/USD",
@@ -28,6 +53,11 @@ const ASSETS = [
     "AUD/USD"
 ];
 
+
+// ======================================================
+// SUPABASE
+// ======================================================
+
 const supabase = createClient(
     process.env.SUPABASE_URL,
     process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -35,25 +65,35 @@ const supabase = createClient(
 
 
 // ======================================================
-// SYMBOL
+// SYMBOL HELPER
 // ======================================================
 
 function symbolFor(asset) {
-    return asset.replace("/", "") + "_otc";
+
+    return (
+        asset.replace("/", "") +
+        "_otc"
+    );
 }
 
 
 // ======================================================
-// CORRECT OTCHARTS TIME
+// OTCHARTS TIME CORRECTION
 // ======================================================
 
-function correctCandleTimes(candles) {
-    return candles.map(c => ({
-        ...c,
+function correctCandleTimes(
+    candles
+) {
+
+    return candles.map(candle => ({
+
+        ...candle,
+
         time: new Date(
-            c.time.getTime() +
+            candle.time.getTime() +
             OTCHARTS_CORRECTION_MS
         )
+
     }));
 }
 
@@ -62,7 +102,9 @@ function correctCandleTimes(candles) {
 // GET M1 CANDLES
 // ======================================================
 
-async function getCandles(asset) {
+async function getCandles(
+    asset
+) {
 
     const symbol =
         symbolFor(asset);
@@ -76,11 +118,16 @@ async function getCandles(asset) {
 
     const response =
         await fetch(url, {
+
             headers: {
+
                 Authorization:
                     `Bearer ${process.env.OTCHARTS_API_KEY}`
+
             }
+
         });
+
 
     if (!response.ok) {
 
@@ -92,11 +139,14 @@ async function getCandles(asset) {
         );
     }
 
+
     const raw =
         await response.json();
 
+
     const candles =
         normalizeCandles(raw);
+
 
     return correctCandleTimes(
         candles
@@ -108,18 +158,27 @@ async function getCandles(asset) {
 // FORMAT WIB
 // ======================================================
 
-function formatWIB(date) {
+function formatWIB(
+    date
+) {
 
     return new Intl.DateTimeFormat(
         "id-ID",
         {
             timeZone: TIMEZONE,
+
             day: "2-digit",
+
             month: "2-digit",
+
             year: "numeric",
+
             hour: "2-digit",
+
             minute: "2-digit",
+
             second: "2-digit",
+
             hour12: false
         }
     )
@@ -129,7 +188,7 @@ function formatWIB(date) {
 
 
 // ======================================================
-// LATEST CLOSED M1 CANDLE
+// GET LATEST CLOSED M1 CANDLE
 // ======================================================
 
 function getLatestClosedCandle(
@@ -139,10 +198,13 @@ function getLatestClosedCandle(
     const now =
         new Date();
 
+
     const currentMinute =
         Math.floor(
-            now.getTime() / 60000
+            now.getTime() /
+            60000
         ) * 60000;
+
 
     const closed =
         candles.filter(
@@ -151,9 +213,12 @@ function getLatestClosedCandle(
                 currentMinute
         );
 
+
     if (!closed.length) {
+
         return null;
     }
+
 
     return closed[
         closed.length - 1
@@ -162,7 +227,7 @@ function getLatestClosedCandle(
 
 
 // ======================================================
-// DUPLICATE CHECK
+// CHECK DUPLICATE SIGNAL
 // ======================================================
 
 async function signalExists(
@@ -173,17 +238,24 @@ async function signalExists(
         data,
         error
     } = await supabase
+
         .from("signals")
+
         .select("id")
+
         .eq(
             "signal_key",
             signalKey
         )
+
         .limit(1);
 
+
     if (error) {
+
         throw error;
     }
+
 
     return (
         Array.isArray(data) &&
@@ -193,32 +265,146 @@ async function signalExists(
 
 
 // ======================================================
+// CHECK 5 MINUTE COOLDOWN
+// ======================================================
+
+async function getCooldownStatus() {
+
+    const {
+        data,
+        error
+    } = await supabase
+
+        .from("signals")
+
+        .select(
+            "id, asset, direction, score, signal_time, entry_time"
+        )
+
+        .order(
+            "signal_time",
+            {
+                ascending: false
+            }
+        )
+
+        .limit(1);
+
+
+    if (error) {
+
+        throw error;
+    }
+
+
+    // Belum pernah ada signal
+    if (
+        !data ||
+        data.length === 0
+    ) {
+
+        return {
+            cooldown: false
+        };
+    }
+
+
+    const lastSignal =
+        data[0];
+
+
+    const lastSignalTime =
+        new Date(
+            lastSignal.signal_time
+        ).getTime();
+
+
+    const now =
+        Date.now();
+
+
+    const elapsed =
+        now -
+        lastSignalTime;
+
+
+    const cooldownMs =
+        COOLDOWN_MINUTES *
+        60 *
+        1000;
+
+
+    if (
+        elapsed <
+        cooldownMs
+    ) {
+
+        const remainingMs =
+            cooldownMs -
+            elapsed;
+
+
+        const remainingMinutes =
+            Math.ceil(
+                remainingMs /
+                60000
+            );
+
+
+        return {
+
+            cooldown: true,
+
+            remainingMinutes,
+
+            lastSignal
+
+        };
+    }
+
+
+    return {
+        cooldown: false
+    };
+}
+
+
+// ======================================================
 // TELEGRAM MESSAGE
 // ======================================================
 
-function formatSignal(signal) {
+function formatSignal(
+    signal
+) {
 
     const direction =
         signal.direction === "CALL"
             ? "BUY"
             : "SELL";
 
+
     const emoji =
         direction === "BUY"
             ? "🟢"
             : "🔴";
 
+
     const reasons =
-        Array.isArray(signal.reasons)
+        Array.isArray(
+            signal.reasons
+        )
             ? signal.reasons
             : [];
 
+
     const reasonText =
         reasons
-            .map(reason =>
-                `🔎 ${reason}`
+            .map(
+                reason =>
+                    `🔎 ${reason}`
             )
             .join("\n");
+
 
     return (
 `━━━━━━━━━━━━━━━━━━
@@ -232,7 +418,9 @@ Timeframe: M1
 
 ⏰ Entry:
 ${formatWIB(
-    new Date(signal.entryTime)
+    new Date(
+        signal.entryTime
+    )
 )} WIB
 
 ${emoji} Direction:
@@ -250,7 +438,7 @@ ${reasonText}
 
 
 // ======================================================
-// TELEGRAM
+// SEND TELEGRAM
 // ======================================================
 
 async function sendTelegram(
@@ -260,39 +448,58 @@ async function sendTelegram(
     const token =
         process.env.TELEGRAM_BOT_TOKEN;
 
+
     const chatId =
         process.env.TELEGRAM_CHAT_ID;
 
-    if (!token || !chatId) {
+
+    if (
+        !token ||
+        !chatId
+    ) {
 
         throw new Error(
             "Telegram environment variables belum lengkap."
         );
     }
 
+
     const url =
         `https://api.telegram.org/bot${token}/sendMessage`;
 
+
     const response =
-        await fetch(url, {
+        await fetch(
+            url,
+            {
 
-            method: "POST",
+                method: "POST",
 
-            headers: {
-                "Content-Type":
-                    "application/json"
-            },
+                headers: {
 
-            body: JSON.stringify({
-                chat_id: chatId,
-                text
-            })
-        });
+                    "Content-Type":
+                        "application/json"
+
+                },
+
+                body: JSON.stringify({
+
+                    chat_id:
+                        chatId,
+
+                    text
+
+                })
+
+            }
+        );
+
 
     if (!response.ok) {
 
         const body =
             await response.text();
+
 
         throw new Error(
             `Telegram ${response.status}: ${body.slice(0, 300)}`
@@ -302,7 +509,7 @@ async function sendTelegram(
 
 
 // ======================================================
-// MAIN
+// MAIN HANDLER
 // ======================================================
 
 export default async function handler(
@@ -319,24 +526,31 @@ export default async function handler(
         const secret =
             process.env.RUN_SECRET;
 
+
         if (secret) {
 
             const provided =
-                req.query?.secret ||
                 req.headers[
                     "x-run-secret"
-                ];
+                ] ||
+                req.query?.secret ||
+                "";
+
 
             if (
-                provided !== secret
+                provided !==
+                secret
             ) {
 
                 return res
                     .status(401)
                     .json({
+
                         ok: false,
+
                         error:
                             "UNAUTHORIZED"
+
                     });
             }
         }
@@ -351,6 +565,72 @@ export default async function handler(
 
 
         // ==================================================
+        // CHECK COOLDOWN
+        // ==================================================
+
+        const cooldown =
+            await getCooldownStatus();
+
+
+        if (
+            cooldown.cooldown
+        ) {
+
+            return res
+                .status(200)
+                .json({
+
+                    ok: true,
+
+                    mode:
+                        "SIGNAL_ONLY",
+
+                    status:
+                        "COOLDOWN",
+
+                    cooldownMinutes:
+                        COOLDOWN_MINUTES,
+
+                    remainingMinutes:
+                        cooldown.remainingMinutes,
+
+                    lastSignal: {
+
+                        asset:
+                            cooldown
+                                .lastSignal
+                                .asset,
+
+                        direction:
+                            cooldown
+                                .lastSignal
+                                .direction,
+
+                        score:
+                            cooldown
+                                .lastSignal
+                                .score,
+
+                        signalTime:
+                            cooldown
+                                .lastSignal
+                                .signal_time,
+
+                        entryTime:
+                            cooldown
+                                .lastSignal
+                                .entry_time
+
+                    },
+
+                    message:
+                        "Masih dalam cooldown. Belum mencari signal baru."
+
+                });
+        }
+
+
+        // ==================================================
         // MINIMUM SCORE
         // ==================================================
 
@@ -362,16 +642,17 @@ export default async function handler(
 
 
         // ==================================================
-        // COLLECT ALL VALID SIGNALS
+        // CANDIDATES
         // ==================================================
 
         const candidates = [];
+
 
         const scanResults = [];
 
 
         // ==================================================
-        // SCAN 4 PAIRS
+        // SCAN 4 OTC PAIRS
         // ==================================================
 
         for (
@@ -379,6 +660,10 @@ export default async function handler(
         ) {
 
             try {
+
+                // ------------------------------------------
+                // GET CANDLES
+                // ------------------------------------------
 
                 const candles =
                     await getCandles(
@@ -392,9 +677,12 @@ export default async function handler(
                 ) {
 
                     scanResults.push({
+
                         asset,
+
                         status:
                             "NOT_ENOUGH_CANDLES"
+
                     });
 
                     continue;
@@ -402,7 +690,7 @@ export default async function handler(
 
 
                 // ------------------------------------------
-                // CLOSED CANDLE
+                // GET CLOSED CANDLE
                 // ------------------------------------------
 
                 const latestClosed =
@@ -411,12 +699,17 @@ export default async function handler(
                     );
 
 
-                if (!latestClosed) {
+                if (
+                    !latestClosed
+                ) {
 
                     scanResults.push({
+
                         asset,
+
                         status:
                             "NO_CLOSED_CANDLE"
+
                     });
 
                     continue;
@@ -424,7 +717,7 @@ export default async function handler(
 
 
                 // ------------------------------------------
-                // ONLY CLOSED CANDLES
+                // USE ONLY CLOSED CANDLES
                 // ------------------------------------------
 
                 const analysisCandles =
@@ -436,13 +729,15 @@ export default async function handler(
 
 
                 // ------------------------------------------
-                // ANALYZE
+                // ANALYZE EMA50 + RSI14
                 // ------------------------------------------
 
                 const signal =
                     analyze(
                         asset,
+
                         analysisCandles,
+
                         minScore
                     );
 
@@ -450,9 +745,12 @@ export default async function handler(
                 if (!signal) {
 
                     scanResults.push({
+
                         asset,
+
                         status:
                             "NO_SIGNAL"
+
                     });
 
                     continue;
@@ -460,17 +758,27 @@ export default async function handler(
 
 
                 // ------------------------------------------
-                // ENTRY = SOURCE CANDLE + 2 MINUTES
+                // SOURCE CANDLE
                 // ------------------------------------------
 
                 const sourceTime =
                     latestClosed.time;
+
+
+                // ------------------------------------------
+                // ENTRY = SOURCE + 2 MINUTES
+                // ------------------------------------------
 
                 const entryTime =
                     new Date(
                         sourceTime.getTime() +
                         2 * 60 * 1000
                     );
+
+
+                // ------------------------------------------
+                // EXPIRATION = 1 MINUTE
+                // ------------------------------------------
 
                 const expiryTime =
                     new Date(
@@ -491,9 +799,12 @@ export default async function handler(
                 ) {
 
                     scanResults.push({
+
                         asset,
+
                         status:
                             "ENTRY_TIME_PASSED"
+
                     });
 
                     continue;
@@ -501,7 +812,7 @@ export default async function handler(
 
 
                 // ------------------------------------------
-                // ADD TO CANDIDATES
+                // ADD CANDIDATE
                 // ------------------------------------------
 
                 candidates.push({
@@ -521,31 +832,40 @@ export default async function handler(
 
 
                 scanResults.push({
+
                     asset,
+
                     status:
                         "CANDIDATE",
+
                     direction:
                         signal.direction,
+
                     score:
                         signal.score
+
                 });
 
             }
             catch (error) {
 
                 scanResults.push({
+
                     asset,
+
                     status:
                         "ERROR",
+
                     error:
                         error.message
+
                 });
             }
         }
 
 
         // ==================================================
-        // NO SIGNAL
+        // NO CANDIDATE
         // ==================================================
 
         if (
@@ -560,6 +880,9 @@ export default async function handler(
 
                     mode:
                         "SIGNAL_ONLY",
+
+                    status:
+                        "NO_SIGNAL",
 
                     selected:
                         null,
@@ -580,7 +903,10 @@ export default async function handler(
         candidates.sort(
             (a, b) => {
 
-                // Score tertinggi terlebih dahulu
+                // ------------------------------------------
+                // 1. SCORE TERTINGGI
+                // ------------------------------------------
+
                 if (
                     b.score !==
                     a.score
@@ -592,8 +918,12 @@ export default async function handler(
                     );
                 }
 
-                // Jika score sama,
-                // pilih entry paling dekat
+
+                // ------------------------------------------
+                // 2. JIKA SCORE SAMA
+                // PILIH ENTRY PALING DEKAT
+                // ------------------------------------------
+
                 return (
                     new Date(
                         a.entryTime
@@ -602,6 +932,7 @@ export default async function handler(
                         b.entryTime
                     ).getTime()
                 );
+
             }
         );
 
@@ -616,9 +947,13 @@ export default async function handler(
 
         const signalKey =
             [
+
                 bestSignal.asset,
+
                 bestSignal.direction,
+
                 bestSignal.entryTime
+
             ].join("_");
 
 
@@ -641,11 +976,11 @@ export default async function handler(
                     mode:
                         "SIGNAL_ONLY",
 
-                    selected:
-                        bestSignal.asset,
-
                     status:
                         "DUPLICATE",
+
+                    selected:
+                        bestSignal.asset,
 
                     direction:
                         bestSignal.direction,
@@ -654,23 +989,23 @@ export default async function handler(
                         bestSignal.score,
 
                     entryTime:
-                        bestSignal.entryTime,
-
-                    scanResults
+                        bestSignal.entryTime
 
                 });
         }
 
 
         // ==================================================
-        // SAVE ONLY SELECTED SIGNAL
+        // SAVE SIGNAL
         // ==================================================
 
         const {
             data: inserted,
             error: insertError
         } = await supabase
+
             .from("signals")
+
             .insert({
 
                 asset:
@@ -722,17 +1057,20 @@ export default async function handler(
                     null
 
             })
+
             .select()
+
             .single();
 
 
         if (insertError) {
+
             throw insertError;
         }
 
 
         // ==================================================
-        // SEND ONLY ONE TELEGRAM SIGNAL
+        // SEND TELEGRAM
         // ==================================================
 
         const telegramText =
@@ -740,13 +1078,14 @@ export default async function handler(
                 bestSignal
             );
 
+
         await sendTelegram(
             telegramText
         );
 
 
         // ==================================================
-        // RESPONSE
+        // SUCCESS
         // ==================================================
 
         return res
@@ -758,11 +1097,11 @@ export default async function handler(
                 mode:
                     "SIGNAL_ONLY",
 
-                selected:
-                    bestSignal.asset,
-
                 status:
                     "SIGNAL_SENT",
+
+                selected:
+                    bestSignal.asset,
 
                 direction:
                     bestSignal.direction,
@@ -776,6 +1115,9 @@ export default async function handler(
                 expiration:
                     EXPIRATION_MINUTES,
 
+                cooldownMinutes:
+                    COOLDOWN_MINUTES,
+
                 signalId:
                     inserted.id,
 
@@ -785,12 +1127,16 @@ export default async function handler(
                 candidates:
                     candidates.map(
                         item => ({
+
                             asset:
                                 item.asset,
+
                             direction:
                                 item.direction,
+
                             score:
                                 item.score
+
                         })
                     )
 
@@ -800,6 +1146,7 @@ export default async function handler(
     catch (error) {
 
         console.error(error);
+
 
         return res
             .status(500)
