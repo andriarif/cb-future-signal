@@ -17,7 +17,7 @@ function symbolFor(asset) {
 }
 
 
-// WIB FORMAT
+// FORMAT WIB
 function formatWIB(date) {
 
   return new Intl.DateTimeFormat(
@@ -30,18 +30,19 @@ function formatWIB(date) {
       hour: "2-digit",
       minute: "2-digit",
       second: "2-digit",
-      hour12: false
+      hour12:false
     }
   ).format(date);
 
 }
 
 
-// =================================================
-// GET CANDLE
-// =================================================
 
-async function getCandles(asset) {
+// ===============================
+// GET CANDLES
+// ===============================
+
+async function getCandles(asset){
 
   const url =
     `https://otcharts.com/v1/candles` +
@@ -78,9 +79,9 @@ async function getCandles(asset) {
 
 
 
-// =================================================
-// NORMALIZE TIME
-// =================================================
+// ===============================
+// TIME PARSER
+// ===============================
 
 function parseCandleTime(t){
 
@@ -91,24 +92,15 @@ function parseCandleTime(t){
 
     ms =
       t < 10000000000
-        ? t * 1000
-        : t;
+      ? t * 1000
+      : t;
 
   }
   else {
 
-    const parsed =
-      Date.parse(t);
-
-
-    /*
-      OTCharts memakai waktu broker.
-      Kita koreksi supaya sesuai WIB.
-    */
-
+    // OTCharts UTC
     ms =
-      parsed -
-      (7 * 60 * 60 * 1000);
+      Date.parse(t);
 
   }
 
@@ -119,9 +111,9 @@ function parseCandleTime(t){
 
 
 
-// =================================================
+// ===============================
 // MAIN
-// =================================================
+// ===============================
 
 export default async function handler(
   req,
@@ -166,7 +158,7 @@ try{
 
     const last =
       rows[
-        rows.length-1
+        rows.length - 1
       ];
 
 
@@ -180,11 +172,11 @@ try{
 
 
 
-    const next =
+    const nextEntry =
       new Date(
         candleTime.getTime()
         +
-        5*60*1000
+        5 * 60 * 1000
       );
 
 
@@ -194,16 +186,20 @@ try{
       asset,
 
 
-      candleBrokerTime:
+      candleUTC:
+        candleTime.toISOString(),
+
+
+      candleWIB:
         formatWIB(candleTime),
 
 
-      nextEntry:
-        formatWIB(next),
+      nextEntryUTC:
+        nextEntry.toISOString(),
 
 
-      candleUTC:
-        candleTime.toISOString(),
+      nextEntryWIB:
+        formatWIB(nextEntry),
 
 
       close:
@@ -231,7 +227,7 @@ try{
       formatWIB(now),
 
 
-    brokerTimezone:
+    timezone:
       "Asia/Jakarta",
 
 
@@ -248,18 +244,17 @@ try{
 }
 catch(error){
 
+  return res.status(500)
+  .json({
 
- return res.status(500)
- .json({
+    ok:false,
 
-   ok:false,
+    error:
+      error.message
 
-   error:
-     error.message
-
- });
-
+  });
 
 }
+
 
 }
