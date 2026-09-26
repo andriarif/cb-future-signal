@@ -1,363 +1,897 @@
+// api/settle.js
+
 import { createClient } from "@supabase/supabase-js";
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const OTCHARTS_API_KEY = process.env.OTCHARTS_API_KEY;
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const SUPABASE_URL =
+  process.env.SUPABASE_URL;
 
-const supabase = createClient(
-  SUPABASE_URL,
-  SUPABASE_SERVICE_ROLE_KEY
-);
+const SUPABASE_SERVICE_ROLE_KEY =
+  process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
+const OTCHARTS_API_KEY =
+  process.env.OTCHARTS_API_KEY;
+
+const TELEGRAM_BOT_TOKEN =
+  process.env.TELEGRAM_BOT_TOKEN;
+
+const TELEGRAM_CHAT_ID =
+  process.env.TELEGRAM_CHAT_ID;
+
+const EXPIRATION_MINUTES =
+  Number(
+    process.env.EXPIRATION_MINUTES || 5
+  );
+
+const supabase =
+  createClient(
+    SUPABASE_URL,
+    SUPABASE_SERVICE_ROLE_KEY
+  );
+
+
+// =========================================================
+// SYMBOL
+// =========================================================
 
 function symbolFor(asset) {
   return `${asset.replace("/", "")}_otc`;
 }
 
-async function getCandles(asset, limit = 30) {
+
+// =========================================================
+// OTCHARTS M5 CANDLES
+// =========================================================
+
+async function getCandles(asset) {
+
   const url =
     `https://otcharts.com/v1/candles` +
     `?venue=otc` +
     `&symbol=${encodeURIComponent(symbolFor(asset))}` +
-    `&tf=60` +
-    `&limit=${limit}`;
+    `&tf=300` +
+    `&limit=30`;
 
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${OTCHARTS_API_KEY}`
-    }
-  });
+  const response =
+    await fetch(url, {
+      headers: {
+        Authorization:
+          `Bearer ${OTCHARTS_API_KEY}`
+      }
+    });
 
   if (!response.ok) {
     throw new Error(
-      `OTCharts HTTP ${response.status}: ${await response.text()}`
+      `OTCharts ${response.status}: ${await response.text()}`
     );
   }
 
-  const data = await response.json();
-
-  return Array.isArray(data)
-    ? data
-    : (data.candles || data.data || []);
+  return await response.json();
 }
 
-function normalizeCandle(c) {
-  return {
-    time: Number(c.time ?? c.timestamp ?? c.t),
-    open: Number(c.open ?? c.o),
-    high: Number(c.high ?? c.h),
-    low: Number(c.low ?? c.l),
-    close: Number(c.close ?? c.c)
-  };
+
+// =========================================================
+// NORMALIZE CANDLES
+// =========================================================
+
+function normalizeCandles(raw) {
+
+  let rows = raw;
+
+  if (
+    raw &&
+    !Array.isArray(raw)
+  ) {
+
+    for (
+      const key of [
+        "candles",
+        "data",
+        "result",
+        "items"
+      ]
+    ) {
+
+      if (
+        Array.isArray(raw[key])
+      ) {
+        rows = raw[key];
+        break;
+      }
+
+    }
+
+  }
+
+  if (!Array.isArray(rows)) {
+    throw new Error(
+      "Response candle bukan array."
+    );
+  }
+
+  return rows
+    .map(row => {
+
+      const x = {
+        ...row
+      };
+
+      if (
+        x.time === undefined
+      ) {
+        x.time =
+          x.timestamp ??
+          x.ts ??
+          x.datetime ??
+          x.date;
+      }
+
+      if (
+        x.open === undefined
+      ) {
+        x.open = x.o;
+      }
+
+      if (
+        x.high === undefined
+      ) {
+        x.high = x.h;
+      }
+
+      if (
+        x.low === undefined
+      ) {
+        x.low = x.l;
+      }
+
+      if (
+        x.close === undefined
+      ) {
+        x.close = x.c;
+      }
+
+      const timestamp =
+        typeof x.time === "number"
+          ? (
+              x.time >
+              10000000000
+                ? x.time
+                : x.time * 1000
+            )
+          : Date.parse(
+              x.time
+            );
+
+      return {
+        time:
+          new Date(timestamp),
+
+        open:
+          Number(x.open),
+
+        high:
+          Number(x.high),
+
+        low:
+          Number(x.low),
+
+        close:
+          Number(x.close)
+      };
+
+    })
+    .filter(
+      candle =>
+        Number.isFinite(
+          candle.time.getTime()
+        ) &&
+        Number.isFinite(
+          candle.open
+        ) &&
+        Number.isFinite(
+          candle.high
+        ) &&
+        Number.isFinite(
+          candle.low
+        ) &&
+        Number.isFinite(
+          candle.close
+        )
+    )
+    .sort(
+      (a, b) =>
+        a.time - b.time
+    );
 }
+
+
+// =========================================================
+// TELEGRAM
+// =========================================================
 
 async function sendTelegram(text) {
-  const url =
-    `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      chat_id: TELEGRAM_CHAT_ID,
-      text
-    })
-  });
+  const url =
+    `https://api.telegram.org/bot` +
+    `${TELEGRAM_BOT_TOKEN}/sendMessage`;
+
+  const response =
+    await fetch(
+      url,
+      {
+        method: "POST",
+
+        headers: {
+          "Content-Type":
+            "application/json"
+        },
+
+        body: JSON.stringify({
+          chat_id:
+            TELEGRAM_CHAT_ID,
+
+          text
+        })
+      }
+    );
 
   if (!response.ok) {
+
     throw new Error(
-      `Telegram HTTP ${response.status}: ${await response.text()}`
+      `Telegram ${response.status}: ${await response.text()}`
     );
+
   }
 }
 
-export default async function handler(req, res) {
-  try {
+
+// =========================================================
+// UTC+6 FORMAT
+// =========================================================
+
+function formatUTC6(
+  timestamp
+) {
+
+  const date =
+    new Date(
+      timestamp +
+      6 * 60 * 60 * 1000
+    );
+
+  const hh =
+    String(
+      date.getUTCHours()
+    ).padStart(2, "0");
+
+  const mm =
+    String(
+      date.getUTCMinutes()
+    ).padStart(2, "0");
+
+  return `${hh}:${mm}`;
+}
+
+
+// =========================================================
+// FIND EXPIRY CANDLE
+// =========================================================
+
+function findExpiryCandle(
+  candles,
+  expiryTime
+) {
+
+  const target =
+    new Date(
+      expiryTime
+    ).getTime();
+
+  /*
+   * Cari candle M5 yang waktunya
+   * sama dengan expiry_time.
+   */
+
+  let best =
+    null;
+
+  let smallest =
+    Infinity;
+
+  for (
+    const candle of candles
+  ) {
+
+    const difference =
+      Math.abs(
+        candle.time.getTime() -
+        target
+      );
+
     /*
-     * Ambil semua signal yang masih PENDING.
+     * Toleransi maksimal 30 detik.
      */
-    const { data: signals, error } = await supabase
-      .from("signals")
-      .select("*")
-      .eq("result", "PENDING")
-      .order("entry_time", { ascending: true })
-      .limit(20);
+
+    if (
+      difference <= 30000 &&
+      difference < smallest
+    ) {
+
+      best =
+        candle;
+
+      smallest =
+        difference;
+
+    }
+
+  }
+
+  return best;
+}
+
+
+// =========================================================
+// FIND FOLLOWING CANDLE
+// =========================================================
+
+function findFollowingCandle(
+  candles,
+  expiryCandle
+) {
+
+  if (!expiryCandle) {
+    return null;
+  }
+
+  const target =
+    expiryCandle.time.getTime();
+
+  return (
+    candles.find(
+      candle =>
+        candle.time.getTime() >
+        target
+    ) || null
+  );
+}
+
+
+// =========================================================
+// MAIN
+// =========================================================
+
+export default async function handler(
+  req,
+  res
+) {
+
+  const now =
+    Date.now();
+
+  const checked = [];
+
+  try {
+
+    // =====================================================
+    // GET PENDING SIGNALS
+    // =====================================================
+
+    const {
+      data: signals,
+      error
+    } =
+      await supabase
+        .from("signals")
+        .select("*")
+        .eq(
+          "result",
+          "PENDING"
+        )
+        .order(
+          "expiry_time",
+          {
+            ascending: true
+          }
+        )
+        .limit(50);
+
 
     if (error) {
-      return res.status(500).json({
-        ok: false,
-        step: "SUPABASE_QUERY",
-        error: error.message
-      });
+
+      throw new Error(
+        `SUPABASE_SELECT: ${error.message}`
+      );
+
     }
 
-    if (!signals || signals.length === 0) {
-      return res.status(200).json({
-        ok: true,
-        checked: 0,
-        message: "Tidak ada signal PENDING."
-      });
+
+    if (
+      !signals ||
+      signals.length === 0
+    ) {
+
+      return res
+        .status(200)
+        .json({
+
+          ok: true,
+
+          timeframe: "M5",
+
+          expirationMinutes:
+            EXPIRATION_MINUTES,
+
+          checked: 0,
+
+          results: []
+
+        });
+
     }
 
-    const results = [];
 
-    for (const signal of signals) {
+    // =====================================================
+    // PROCESS EACH SIGNAL
+    // =====================================================
+
+    for (
+      const signal of signals
+    ) {
+
       try {
-        const entryTime = new Date(
-          signal.entry_time
-        ).getTime();
 
-        if (!Number.isFinite(entryTime)) {
-          results.push({
-            asset: signal.asset,
-            status: "ERROR",
-            error: "ENTRY_TIME_INVALID",
-            entryTime: signal.entry_time
+        const entryTime =
+          new Date(
+            signal.entry_time
+          ).getTime();
+
+
+        let expiryTime =
+          signal.expiry_time
+            ? new Date(
+                signal.expiry_time
+              ).getTime()
+            : (
+                entryTime +
+                EXPIRATION_MINUTES *
+                  60 *
+                  1000
+              );
+
+
+        // =================================================
+        // BELUM WAKTU EXPIRY
+        // =================================================
+
+        if (
+          now <
+          expiryTime
+        ) {
+
+          checked.push({
+
+            id:
+              signal.id,
+
+            asset:
+              signal.asset,
+
+            status:
+              "WAITING_EXPIRY",
+
+            entryTime:
+              signal.entry_time,
+
+            expiryTime:
+              new Date(
+                expiryTime
+              ).toISOString()
+
           });
 
           continue;
+
         }
 
-        /*
-         * Ambil candle terbaru dari OTCharts.
-         */
-        const rawCandles = await getCandles(
-          signal.asset,
-          30
-        );
 
-        const candles = rawCandles
-          .map(normalizeCandle)
-          .filter(c =>
-            Number.isFinite(c.time) &&
-            Number.isFinite(c.open) &&
-            Number.isFinite(c.high) &&
-            Number.isFinite(c.low) &&
-            Number.isFinite(c.close)
-          )
-          .sort((a, b) => a.time - b.time);
+        // =================================================
+        // GET M5 DATA
+        // =================================================
 
-        if (candles.length === 0) {
-          results.push({
-            asset: signal.asset,
-            status: "NO_CANDLES"
-          });
-
-          continue;
-        }
-
-        /*
-         * Waktu candle dalam milliseconds.
-         */
-        const candleTimes = candles.map(
-          c => c.time * 1000
-        );
-
-        /*
-         * Cari candle entry.
-         *
-         * Kita toleransi perbedaan beberapa detik
-         * pada timestamp.
-         */
-        const tolerance = 30_000;
-
-        let entryIndex = -1;
-
-        for (let i = 0; i < candles.length; i++) {
-          if (
-            Math.abs(
-              candleTimes[i] - entryTime
-            ) <= tolerance
-          ) {
-            entryIndex = i;
-            break;
-          }
-        }
-
-        /*
-         * Kalau candle dengan timestamp persis tidak ditemukan,
-         * cari candle pertama setelah entry.
-         */
-        if (entryIndex === -1) {
-          entryIndex = candles.findIndex(
-            c => c.time * 1000 >= entryTime
+        const raw =
+          await getCandles(
+            signal.asset
           );
-        }
 
-        if (entryIndex === -1) {
-          results.push({
-            asset: signal.asset,
-            status: "ENTRY_CANDLE_NOT_FOUND",
-            entryTime: signal.entry_time,
-            latestCandleTime: new Date(
-              candles[candles.length - 1].time * 1000
-            ).toISOString()
-          });
 
-          continue;
-        }
+        const candles =
+          normalizeCandles(
+            raw
+          );
 
-        /*
-         * Candle hasil adalah candle M1 setelah candle entry.
-         */
-        const resultIndex = entryIndex + 1;
 
-        if (resultIndex >= candles.length) {
-          results.push({
-            asset: signal.asset,
-            status: "WAITING_RESULT_CANDLE",
-            entryTime: signal.entry_time,
-            entryCandle: new Date(
-              candles[entryIndex].time * 1000
-            ).toISOString()
-          });
-
-          continue;
-        }
-
-        const entryCandle = candles[entryIndex];
-        const resultCandle = candles[resultIndex];
-
-        /*
-         * Pastikan candle hasil sudah selesai.
-         *
-         * OTCharts candle berikutnya harus sudah memiliki
-         * candle setelahnya agar kita tahu candle tersebut
-         * sudah closed.
-         */
-        if (resultIndex + 1 >= candles.length) {
-          results.push({
-            asset: signal.asset,
-            status: "WAITING_RESULT_CANDLE_CLOSE",
-            entryTime: signal.entry_time,
-            entryCandle: new Date(
-              entryCandle.time * 1000
-            ).toISOString(),
-            resultCandle: new Date(
-              resultCandle.time * 1000
-            ).toISOString()
-          });
-
-          continue;
-        }
-
-        const entryPrice = Number(
-          signal.entry_price
-        );
-
-        const closePrice = Number(
-          resultCandle.close
-        );
-
-        const direction = String(
-          signal.direction || ""
-        ).toUpperCase();
-
-        let result;
-
-        if (closePrice === entryPrice) {
-          result = "DRAW";
-        } else if (
-          direction === "CALL" &&
-          closePrice > entryPrice
+        if (
+          candles.length < 3
         ) {
-          result = "WIN";
-        } else if (
-          direction === "PUT" &&
-          closePrice < entryPrice
-        ) {
-          result = "WIN";
-        } else {
-          result = "LOSS";
+
+          checked.push({
+
+            id:
+              signal.id,
+
+            asset:
+              signal.asset,
+
+            status:
+              "CANDLES_NOT_ENOUGH"
+
+          });
+
+          continue;
+
         }
 
-        /*
-         * Update hasil ke Supabase.
-         */
-        const { error: updateError } =
+
+        // =================================================
+        // FIND EXPIRY CANDLE
+        // =================================================
+
+        const expiryCandle =
+          findExpiryCandle(
+            candles,
+            expiryTime
+          );
+
+
+        if (!expiryCandle) {
+
+          checked.push({
+
+            id:
+              signal.id,
+
+            asset:
+              signal.asset,
+
+            status:
+              "EXPIRY_CANDLE_NOT_FOUND",
+
+            expiryTime:
+              new Date(
+                expiryTime
+              ).toISOString(),
+
+            latestCandle:
+              candles[
+                candles.length - 1
+              ].time.toISOString()
+
+          });
+
+          continue;
+
+        }
+
+
+        // =================================================
+        // MAKE SURE EXPIRY CANDLE IS CLOSED
+        // =================================================
+
+        const followingCandle =
+          findFollowingCandle(
+            candles,
+            expiryCandle
+          );
+
+
+        if (!followingCandle) {
+
+          checked.push({
+
+            id:
+              signal.id,
+
+            asset:
+              signal.asset,
+
+            status:
+              "EXPIRY_CANDLE_NOT_CLOSED",
+
+            expiryCandle:
+              expiryCandle.time
+                .toISOString()
+
+          });
+
+          continue;
+
+        }
+
+
+        // =================================================
+        // RESULT
+        // =================================================
+
+        const entryPrice =
+          Number(
+            signal.entry_price
+          );
+
+        const closePrice =
+          Number(
+            expiryCandle.close
+          );
+
+
+        if (
+          !Number.isFinite(
+            entryPrice
+          ) ||
+          !Number.isFinite(
+            closePrice
+          )
+        ) {
+
+          checked.push({
+
+            id:
+              signal.id,
+
+            asset:
+              signal.asset,
+
+            status:
+              "INVALID_PRICE"
+
+          });
+
+          continue;
+
+        }
+
+
+        let result =
+          "DRAW";
+
+
+        if (
+          signal.direction ===
+          "CALL"
+        ) {
+
+          if (
+            closePrice >
+            entryPrice
+          ) {
+
+            result =
+              "WIN";
+
+          } else if (
+            closePrice <
+            entryPrice
+          ) {
+
+            result =
+              "LOSS";
+
+          }
+
+        }
+        else if (
+          signal.direction ===
+          "PUT"
+        ) {
+
+          if (
+            closePrice <
+            entryPrice
+          ) {
+
+            result =
+              "WIN";
+
+          } else if (
+            closePrice >
+            entryPrice
+          ) {
+
+            result =
+              "LOSS";
+
+          }
+
+        }
+
+
+        // =================================================
+        // UPDATE SUPABASE
+        // =================================================
+
+        const {
+          error:
+            updateError
+        } =
           await supabase
             .from("signals")
             .update({
-              result
-            })
-            .eq("id", signal.id);
 
-        if (updateError) {
+              result,
+
+              result_price:
+                closePrice,
+
+              result_time:
+                new Date(
+                  expiryCandle.time
+                ).toISOString(),
+
+              settled_at:
+                new Date()
+                  .toISOString()
+
+            })
+            .eq(
+              "id",
+              signal.id
+            );
+
+
+        if (
+          updateError
+        ) {
+
           throw new Error(
             `SUPABASE_UPDATE: ${updateError.message}`
           );
+
         }
 
-        /*
-         * Kirim hasil ke Telegram.
-         */
+
+        // =================================================
+        // TELEGRAM RESULT
+        // =================================================
+
         const emoji =
           result === "WIN"
             ? "✅"
             : result === "LOSS"
               ? "❌"
-              : "⚖️";
+              : "➖";
 
-        const message =
-`📊 CB FUTURE SIGNAL
 
-${signal.asset}
-TF: M1
-Signal: ${direction}
+        const direction =
+          signal.direction ===
+          "CALL"
+            ? "BUY"
+            : "SELL";
 
-Entry: ${entryPrice}
-Close: ${closePrice}
 
-HASIL: ${emoji} ${result}`;
+        const resultMessage =
+`📊 RESULT
 
-        await sendTelegram(message);
+🌐 ${signal.asset} OTC
+Timeframe: M5
 
-        results.push({
-          asset: signal.asset,
-          direction,
+⏰ Entry: ${formatUTC6(
+  entryTime
+)} UTC+6
+
+${signal.direction === "CALL" ? "🟩" : "🟥"} Direction: ${direction}
+
+⏱ Expiration: 5 minutes
+⏰ Result: ${formatUTC6(
+  expiryTime
+)} UTC+6
+
+💰 Entry Price: ${entryPrice}
+💰 Result Price: ${closePrice}
+
+${emoji} ${result}`;
+
+
+        await sendTelegram(
+          resultMessage
+        );
+
+
+        // =================================================
+        // RESPONSE
+        // =================================================
+
+        checked.push({
+
+          id:
+            signal.id,
+
+          asset:
+            signal.asset,
+
+          direction:
+            signal.direction,
+
           entryPrice,
+
           closePrice,
-          entryCandleTime:
+
+          entryTime:
             new Date(
-              entryCandle.time * 1000
+              entryTime
             ).toISOString(),
-          resultCandleTime:
+
+          expiryTime:
             new Date(
-              resultCandle.time * 1000
+              expiryTime
             ).toISOString(),
+
           result,
-          status: "SETTLED"
+
+          status:
+            "SETTLED"
+
         });
 
-        await sleep(200);
 
-      } catch (err) {
-        results.push({
-          asset: signal.asset,
-          status: "ERROR",
-          error: err.message
-        });
       }
+      catch(error) {
+
+        checked.push({
+
+          id:
+            signal.id,
+
+          asset:
+            signal.asset,
+
+          status:
+            "ERROR",
+
+          error:
+            error.message
+
+        });
+
+      }
+
     }
 
-    return res.status(200).json({
-      ok: true,
-      checked: signals.length,
-      results
-    });
 
-  } catch (error) {
-    return res.status(500).json({
-      ok: false,
-      step: "SETTLE",
-      error: error.message
-    });
+    return res
+      .status(200)
+      .json({
+
+        ok: true,
+
+        timeframe: "M5",
+
+        expirationMinutes:
+          EXPIRATION_MINUTES,
+
+        checked:
+          checked.length,
+
+        results:
+          checked
+
+      });
+
+
   }
+  catch(error) {
+
+    return res
+      .status(500)
+      .json({
+
+        ok: false,
+
+        step: "SETTLE",
+
+        error:
+          error.message
+
+      });
+
+  }
+
 }
