@@ -32,6 +32,11 @@ function json(data, status = 200) {
   );
 }
 
+
+// ============================================================
+// OTCHARTS
+// ============================================================
+
 async function getCandles(asset) {
 
   const key =
@@ -51,70 +56,59 @@ async function getCandles(asset) {
       "https://otcharts.com/v1/candles"
     );
 
-  url.searchParams.set(
-    "venue",
-    "otc"
-  );
+  url.searchParams.set("venue", "otc");
+  url.searchParams.set("symbol", symbol);
+  url.searchParams.set("tf", "60");
+  url.searchParams.set("limit", "250");
 
-  url.searchParams.set(
-    "symbol",
-    symbol
-  );
+  try {
 
-  url.searchParams.set(
-    "tf",
-    "60"
-  );
-
-  url.searchParams.set(
-    "limit",
-    "250"
-  );
-
-  const response =
-    await fetch(
-      url,
-      {
+    const response =
+      await fetch(url, {
         method: "GET",
-
         headers: {
           "accept": "application/json",
           "authorization":
             `Bearer ${key}`
         },
-
         cache: "no-store"
-      }
-    );
+      });
 
-  if (!response.ok) {
+    if (!response.ok) {
 
-    const body =
-      await response.text();
+      const body =
+        await response.text();
+
+      throw new Error(
+        `OTCharts HTTP ${response.status}: ${body}`
+      );
+    }
+
+    const data =
+      await response.json();
+
+    if (!Array.isArray(data.candles)) {
+      throw new Error(
+        "OTCharts candles tidak valid."
+      );
+    }
+
+    return data.candles;
+
+  } catch (error) {
 
     throw new Error(
-      `OTCharts ${asset}: ` +
-      `HTTP ${response.status} ` +
-      `${response.statusText} ` +
-      `${body}`
+      `STEP=OTCHARTS | ` +
+      `asset=${asset} | ` +
+      `${error.message}`
     );
   }
-
-  const data =
-    await response.json();
-
-  if (
-    !data ||
-    !Array.isArray(data.candles)
-  ) {
-    throw new Error(
-      `OTCharts ${asset}: ` +
-      `format candles tidak valid.`
-    );
-  }
-
-  return data.candles;
 }
+
+
+// ============================================================
+// TELEGRAM
+// ============================================================
 
 async function sendTelegram(message) {
 
@@ -126,52 +120,86 @@ async function sendTelegram(message) {
 
   if (!token || !chatId) {
     throw new Error(
-      "TELEGRAM_BOT_TOKEN atau " +
-      "TELEGRAM_CHAT_ID belum diatur."
+      "STEP=TELEGRAM_CONFIG | " +
+      "Token atau Chat ID belum diatur."
     );
   }
 
-  const response =
-    await fetch(
-      `https://api.telegram.org/bot${token}/sendMessage`,
-      {
-        method: "POST",
+  try {
 
-        headers: {
-          "content-type":
-            "application/json"
-        },
+    const response =
+      await fetch(
+        `https://api.telegram.org/bot${token}/sendMessage`,
+        {
+          method: "POST",
 
-        body: JSON.stringify({
-          chat_id: chatId,
-          text: message,
-          parse_mode: "HTML",
-          disable_web_page_preview: true
-        })
-      }
-    );
+          headers: {
+            "content-type":
+              "application/json"
+          },
 
-  if (!response.ok) {
+          body: JSON.stringify({
+            chat_id: chatId,
+            text: message,
+            parse_mode: "HTML",
+            disable_web_page_preview: true
+          })
+        }
+      );
 
-    const body =
-      await response.text();
+    if (!response.ok) {
+
+      const body =
+        await response.text();
+
+      throw new Error(
+        `Telegram HTTP ${response.status}: ${body}`
+      );
+    }
+
+    return response.json();
+
+  } catch (error) {
 
     throw new Error(
-      `Telegram HTTP ` +
-      `${response.status}: ${body}`
+      `STEP=TELEGRAM | ${error.message}`
     );
   }
-
-  return response.json();
 }
 
+
+// ============================================================
+// PROCESS ASSET
+// ============================================================
+
 async function processAsset(asset) {
+
+  // ----------------------------------------------------------
+  // 1. OTCHARTS
+  // ----------------------------------------------------------
 
   const raw =
     await getCandles(asset);
 
-  const candles =
-    normalizeCandles(raw);
+
+  // ----------------------------------------------------------
+  // 2. NORMALIZE
+  // ----------------------------------------------------------
+
+  let candles;
+
+  try {
+
+    candles =
+      normalizeCandles(raw);
+
+  } catch (error) {
+
+    throw new Error(
+      `STEP=NORMALIZE | ${error.message}`
+    );
+  }
+
 
   if (candles.length < 220) {
 
@@ -184,14 +212,35 @@ async function processAsset(asset) {
     };
   }
 
-  const signal =
-    analyze(
-      asset,
-      candles,
-      Number(
-        process.env.MIN_SCORE || 2
-      )
+
+  // ----------------------------------------------------------
+  // 3. ANALYZE
+  // ----------------------------------------------------------
+
+  let signal;
+
+  try {
+
+    signal =
+      analyze(
+        asset,
+        candles,
+        Number(
+          process.env.MIN_SCORE || 2
+        )
+      );
+
+  } catch (error) {
+
+    throw new Error(
+      `STEP=ANALYZE | ${error.message}`
     );
+  }
+
+
+  // ----------------------------------------------------------
+  // NO SIGNAL
+  // ----------------------------------------------------------
 
   if (!signal) {
 
@@ -202,25 +251,52 @@ async function processAsset(asset) {
     };
   }
 
+
+  // ----------------------------------------------------------
+  // 4. SIGNAL KEY
+  // ----------------------------------------------------------
+
   const signalKey =
     `${asset}:` +
     `${candleKey(signal.signalTime)}:` +
     `${signal.direction}`;
 
-  const {
-    data: existing,
-    error: checkError
-  } =
-    await supabase
-      .from("signals")
-      .select("id")
-      .eq("asset", asset)
-      .eq("signal_key", signalKey)
-      .maybeSingle();
 
-  if (checkError) {
-    throw checkError;
+  // ----------------------------------------------------------
+  // 5. SUPABASE CHECK
+  // ----------------------------------------------------------
+
+  let existing;
+
+  try {
+
+    const result =
+      await supabase
+        .from("signals")
+        .select("id")
+        .eq("asset", asset)
+        .eq("signal_key", signalKey)
+        .maybeSingle();
+
+    if (result.error) {
+      throw result.error;
+    }
+
+    existing =
+      result.data;
+
+  } catch (error) {
+
+    throw new Error(
+      `STEP=SUPABASE_CHECK | ` +
+      `${error.message}`
+    );
   }
+
+
+  // ----------------------------------------------------------
+  // DUPLICATE
+  // ----------------------------------------------------------
 
   if (existing) {
 
@@ -230,6 +306,11 @@ async function processAsset(asset) {
       signalKey
     };
   }
+
+
+  // ----------------------------------------------------------
+  // 6. INSERT SUPABASE
+  // ----------------------------------------------------------
 
   const row = {
 
@@ -263,24 +344,53 @@ async function processAsset(asset) {
       signal.reasons
   };
 
-  const {
-    error: insertError
-  } =
-    await supabase
-      .from("signals")
-      .insert(row);
 
-  if (insertError) {
-    throw insertError;
+  try {
+
+    const result =
+      await supabase
+        .from("signals")
+        .insert(row);
+
+    if (result.error) {
+      throw result.error;
+    }
+
+  } catch (error) {
+
+    throw new Error(
+      `STEP=SUPABASE_INSERT | ` +
+      `${error.message}`
+    );
   }
 
-  await sendTelegram(
-    formatSignal(
-      signal,
-      process.env.TELEGRAM_TIMEZONE ||
-      "Asia/Jakarta"
-    )
-  );
+
+  // ----------------------------------------------------------
+  // 7. TELEGRAM
+  // ----------------------------------------------------------
+
+  try {
+
+    await sendTelegram(
+      formatSignal(
+        signal,
+        process.env.TELEGRAM_TIMEZONE ||
+        "Asia/Jakarta"
+      )
+    );
+
+  } catch (error) {
+
+    throw new Error(
+      `STEP=TELEGRAM_SEND | ` +
+      `${error.message}`
+    );
+  }
+
+
+  // ----------------------------------------------------------
+  // SUCCESS
+  // ----------------------------------------------------------
 
   return {
 
@@ -305,6 +415,11 @@ async function processAsset(asset) {
       signal.reasons
   };
 }
+
+
+// ============================================================
+// GET /api/scan
+// ============================================================
 
 export async function GET(request) {
 
@@ -333,7 +448,9 @@ export async function GET(request) {
       );
     }
 
+
     const results = [];
+
 
     for (
       const asset of ASSETS
@@ -359,6 +476,7 @@ export async function GET(request) {
         });
       }
     }
+
 
     return json({
 
