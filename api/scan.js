@@ -7,20 +7,10 @@ import {
   formatSignal
 } from "../signal-engine.js";
 
-
-// ============================================================
-// SUPABASE
-// ============================================================
-
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
-
-
-// ============================================================
-// ASSETS
-// ============================================================
 
 const ASSETS = (
   process.env.ASSETS ||
@@ -29,11 +19,6 @@ const ASSETS = (
   .split(",")
   .map(x => x.trim())
   .filter(Boolean);
-
-
-// ============================================================
-// JSON RESPONSE
-// ============================================================
 
 function json(data, status = 200) {
   return new Response(
@@ -47,12 +32,11 @@ function json(data, status = 200) {
   );
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
-// ============================================================
-// ERROR DETAIL
-// ============================================================
-
-function errorDetail(error) {
+function getErrorInfo(error) {
   return {
     name: error?.name || null,
     message: error?.message || null,
@@ -68,7 +52,7 @@ function errorDetail(error) {
 
 
 // ============================================================
-// OTCHARTS - GET M1 CANDLES
+// OTCHARTS CANDLES
 // ============================================================
 
 async function getCandles(asset) {
@@ -81,20 +65,13 @@ async function getCandles(asset) {
     );
   }
 
-
-  // EUR/USD -> EURUSD_otc
-  // GBP/USD -> GBPUSD_otc
-  // USD/JPY -> USDJPY_otc
-
   const symbol =
     asset.replace("/", "") + "_otc";
-
 
   const url =
     new URL(
       "https://otcharts.com/v1/candles"
     );
-
 
   url.searchParams.set(
     "venue",
@@ -106,126 +83,128 @@ async function getCandles(asset) {
     symbol
   );
 
-  // 60 detik = M1
   url.searchParams.set(
     "tf",
     "60"
   );
 
-  // 250 candle M1
   url.searchParams.set(
     "limit",
     "250"
   );
 
 
-  let response;
-
-  try {
-
-    response = await fetch(
-      url,
-      {
-        method: "GET",
-
-        headers: {
-          "accept": "application/json",
-          "authorization": `Bearer ${key}`
-        },
-
-        cache: "no-store"
-      }
-    );
-
-  } catch (error) {
-
-    const detail =
-      errorDetail(error);
-
-    throw new Error(
-      `OTCharts FETCH FAILED ${asset} | ` +
-      `symbol=${symbol} | ` +
-      `name=${detail.name} | ` +
-      `message=${detail.message} | ` +
-      `cause=${JSON.stringify(detail.cause)}`
-    );
-  }
+  let lastError = null;
 
 
   // ==========================================================
-  // HTTP ERROR
+  // RETRY 3X
   // ==========================================================
 
-  if (!response.ok) {
-
-    let body = "";
+  for (let attempt = 1; attempt <= 3; attempt++) {
 
     try {
-      body = await response.text();
-    } catch {
-      body = "Tidak bisa membaca response body.";
+
+      const response = await fetch(
+        url,
+        {
+          method: "GET",
+
+          headers: {
+            "accept": "application/json",
+            "authorization": `Bearer ${key}`,
+            "user-agent": "CB-Future-Signal/1.0"
+          },
+
+          cache: "no-store"
+        }
+      );
+
+
+      // ------------------------------------------------------
+      // HTTP ERROR
+      // ------------------------------------------------------
+
+      if (!response.ok) {
+
+        const body =
+          await response.text();
+
+        throw new Error(
+          `OTCharts HTTP ${response.status} ` +
+          `${response.statusText} ` +
+          `${body}`
+        );
+      }
+
+
+      // ------------------------------------------------------
+      // JSON
+      // ------------------------------------------------------
+
+      const data =
+        await response.json();
+
+
+      if (!data) {
+        throw new Error(
+          "OTCharts response kosong."
+        );
+      }
+
+
+      if (!Array.isArray(data.candles)) {
+        throw new Error(
+          "OTCharts format candles tidak valid."
+        );
+      }
+
+
+      if (data.candles.length === 0) {
+        throw new Error(
+          "OTCharts candles kosong."
+        );
+      }
+
+
+      return data.candles;
+
+
+    } catch (error) {
+
+      lastError = error;
+
+
+      // Kalau masih ada retry
+      if (attempt < 3) {
+
+        await sleep(
+          700 * attempt
+        );
+
+      }
+
     }
 
-    throw new Error(
-      `OTCharts ${asset}: ` +
-      `HTTP ${response.status} ` +
-      `${response.statusText} ` +
-      `${body}`
-    );
   }
 
 
   // ==========================================================
-  // JSON
+  // SEMUA RETRY GAGAL
   // ==========================================================
 
-  let data;
+  const info =
+    getErrorInfo(lastError);
 
-  try {
-
-    data = await response.json();
-
-  } catch (error) {
-
-    throw new Error(
-      `OTCharts ${asset}: ` +
-      `response bukan JSON. ` +
-      `${error.message}`
-    );
-  }
-
-
-  // ==========================================================
-  // VALIDASI CANDLE
-  // ==========================================================
-
-  if (!data) {
-
-    throw new Error(
-      `OTCharts ${asset}: response kosong.`
-    );
-  }
-
-
-  if (!Array.isArray(data.candles)) {
-
-    throw new Error(
-      `OTCharts ${asset}: ` +
-      `format candles tidak valid.`
-    );
-  }
-
-
-  if (data.candles.length === 0) {
-
-    throw new Error(
-      `OTCharts ${asset}: ` +
-      `candles kosong.`
-    );
-  }
-
-
-  return data.candles;
+  throw new Error(
+    `OTCharts FETCH FAILED | ` +
+    `asset=${asset} | ` +
+    `symbol=${symbol} | ` +
+    `attempts=3 | ` +
+    `name=${info.name} | ` +
+    `message=${info.message} | ` +
+    `cause=${JSON.stringify(info.cause)}`
+  );
 }
 
 
@@ -241,15 +220,12 @@ async function sendTelegram(message) {
   const chatId =
     process.env.TELEGRAM_CHAT_ID;
 
-
   if (!token || !chatId) {
-
     throw new Error(
       "TELEGRAM_BOT_TOKEN atau " +
       "TELEGRAM_CHAT_ID belum diatur."
     );
   }
-
 
   const response =
     await fetch(
@@ -278,41 +254,27 @@ async function sendTelegram(message) {
       await response.text();
 
     throw new Error(
-      `Telegram HTTP ` +
-      `${response.status}: ${body}`
+      `Telegram HTTP ${response.status}: ${body}`
     );
   }
-
 
   return response.json();
 }
 
 
 // ============================================================
-// PROCESS ONE ASSET
+// PROCESS ASSET
 // ============================================================
 
 async function processAsset(asset) {
-
-  // ----------------------------------------------------------
-  // GET CANDLES
-  // ----------------------------------------------------------
 
   const raw =
     await getCandles(asset);
 
 
-  // ----------------------------------------------------------
-  // NORMALIZE
-  // ----------------------------------------------------------
-
   const candles =
     normalizeCandles(raw);
 
-
-  // ----------------------------------------------------------
-  // CHECK MINIMUM CANDLE
-  // ----------------------------------------------------------
 
   if (candles.length < 220) {
 
@@ -326,29 +288,19 @@ async function processAsset(asset) {
   }
 
 
-  // ----------------------------------------------------------
-  // ANALYZE
-  // ----------------------------------------------------------
+  // ==========================================================
+  // MIN SCORE = 2
+  // ==========================================================
 
   const signal =
     analyze(
       asset,
       candles,
-
-      // ======================================================
-      // SIGNAL LONGGAR
-      // minimum score = 2
-      // ======================================================
-
       Number(
         process.env.MIN_SCORE || 2
       )
     );
 
-
-  // ----------------------------------------------------------
-  // NO SIGNAL
-  // ----------------------------------------------------------
 
   if (!signal) {
 
@@ -360,19 +312,15 @@ async function processAsset(asset) {
   }
 
 
-  // ----------------------------------------------------------
-  // SIGNAL KEY
-  // ----------------------------------------------------------
-
   const signalKey =
     `${asset}:` +
     `${candleKey(signal.signalTime)}:` +
     `${signal.direction}`;
 
 
-  // ----------------------------------------------------------
-  // CHECK DUPLICATE
-  // ----------------------------------------------------------
+  // ==========================================================
+  // DUPLICATE CHECK
+  // ==========================================================
 
   const {
     data: existing,
@@ -391,10 +339,6 @@ async function processAsset(asset) {
   }
 
 
-  // ----------------------------------------------------------
-  // DUPLICATE
-  // ----------------------------------------------------------
-
   if (existing) {
 
     return {
@@ -405,9 +349,9 @@ async function processAsset(asset) {
   }
 
 
-  // ----------------------------------------------------------
-  // DATABASE ROW
-  // ----------------------------------------------------------
+  // ==========================================================
+  // SAVE SIGNAL
+  // ==========================================================
 
   const row = {
 
@@ -442,10 +386,6 @@ async function processAsset(asset) {
   };
 
 
-  // ----------------------------------------------------------
-  // INSERT SUPABASE
-  // ----------------------------------------------------------
-
   const {
     error: insertError
   } =
@@ -459,9 +399,9 @@ async function processAsset(asset) {
   }
 
 
-  // ----------------------------------------------------------
-  // TELEGRAM
-  // ----------------------------------------------------------
+  // ==========================================================
+  // SEND TELEGRAM
+  // ==========================================================
 
   await sendTelegram(
     formatSignal(
@@ -471,10 +411,6 @@ async function processAsset(asset) {
     )
   );
 
-
-  // ----------------------------------------------------------
-  // RESULT
-  // ----------------------------------------------------------
 
   return {
 
@@ -513,17 +449,9 @@ export async function GET(request) {
       new URL(request.url);
 
 
-    // --------------------------------------------------------
-    // CRON SECRET
-    // --------------------------------------------------------
-
     const secret =
-      url.searchParams.get(
-        "secret"
-      ) ||
-      request.headers.get(
-        "x-cron-secret"
-      );
+      url.searchParams.get("secret") ||
+      request.headers.get("x-cron-secret");
 
 
     if (
@@ -541,12 +469,12 @@ export async function GET(request) {
     }
 
 
-    // --------------------------------------------------------
-    // PROCESS ALL ASSETS
-    // --------------------------------------------------------
-
     const results = [];
 
+
+    // ========================================================
+    // SCAN SATU PER SATU
+    // ========================================================
 
     for (
       const asset of ASSETS
@@ -571,15 +499,15 @@ export async function GET(request) {
             error.message,
 
           detail:
-            errorDetail(error)
+            getErrorInfo(error)
         });
       }
+
+
+      // jeda kecil antar pair
+      await sleep(300);
     }
 
-
-    // --------------------------------------------------------
-    // FINAL RESPONSE
-    // --------------------------------------------------------
 
     return json({
 
@@ -604,7 +532,6 @@ export async function GET(request) {
   } catch (error) {
 
     return json(
-
       {
         ok: false,
 
@@ -612,11 +539,9 @@ export async function GET(request) {
           error.message,
 
         detail:
-          errorDetail(error)
+          getErrorInfo(error)
       },
-
       500
-
     );
   }
 }
