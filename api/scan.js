@@ -24,7 +24,8 @@ const DISPLAY_UTC_OFFSET = Number(
 const ASSETS = [
   "EUR/USD",
   "GBP/USD",
-  "USD/JPY"
+  "USD/JPY",
+  "AUD/USD"
 ];
 
 const supabase = createClient(
