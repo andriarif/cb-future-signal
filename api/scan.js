@@ -1,7 +1,7 @@
 // api/scan.js
 // CB Future Signal - SIGNAL ONLY
+// 1 BEST SIGNAL FROM 4 OTC PAIRS
 // Strategy: M1 EMA50 + RSI14 + Candle Confirmation
-// Telegram: SIGNAL ONLY
 // No Entry Price
 // No Expiration Price
 // No WIN / LOSS
@@ -18,9 +18,15 @@ const TIMEZONE = "Asia/Jakarta";
 const TIMEFRAME = "M1";
 const EXPIRATION_MINUTES = 1;
 
-// OTCharts OTC timestamp correction
 const OTCHARTS_CORRECTION_MS =
     -2 * 60 * 60 * 1000;
+
+const ASSETS = [
+    "EUR/USD",
+    "GBP/USD",
+    "USD/JPY",
+    "AUD/USD"
+];
 
 const supabase = createClient(
     process.env.SUPABASE_URL,
@@ -58,7 +64,8 @@ function correctCandleTimes(candles) {
 
 async function getCandles(asset) {
 
-    const symbol = symbolFor(asset);
+    const symbol =
+        symbolFor(asset);
 
     const url =
         `https://otcharts.com/v1/candles` +
@@ -67,12 +74,13 @@ async function getCandles(asset) {
         `&tf=60` +
         `&limit=120`;
 
-    const response = await fetch(url, {
-        headers: {
-            Authorization:
-                `Bearer ${process.env.OTCHARTS_API_KEY}`
-        }
-    });
+    const response =
+        await fetch(url, {
+            headers: {
+                Authorization:
+                    `Bearer ${process.env.OTCHARTS_API_KEY}`
+            }
+        });
 
     if (!response.ok) {
 
@@ -90,7 +98,9 @@ async function getCandles(asset) {
     const candles =
         normalizeCandles(raw);
 
-    return correctCandleTimes(candles);
+    return correctCandleTimes(
+        candles
+    );
 }
 
 
@@ -119,10 +129,12 @@ function formatWIB(date) {
 
 
 // ======================================================
-// GET LATEST CLOSED M1 CANDLE
+// LATEST CLOSED M1 CANDLE
 // ======================================================
 
-function getLatestClosedCandle(candles) {
+function getLatestClosedCandle(
+    candles
+) {
 
     const now =
         new Date();
@@ -150,7 +162,38 @@ function getLatestClosedCandle(candles) {
 
 
 // ======================================================
-// SIGNAL MESSAGE
+// DUPLICATE CHECK
+// ======================================================
+
+async function signalExists(
+    signalKey
+) {
+
+    const {
+        data,
+        error
+    } = await supabase
+        .from("signals")
+        .select("id")
+        .eq(
+            "signal_key",
+            signalKey
+        )
+        .limit(1);
+
+    if (error) {
+        throw error;
+    }
+
+    return (
+        Array.isArray(data) &&
+        data.length > 0
+    );
+}
+
+
+// ======================================================
+// TELEGRAM MESSAGE
 // ======================================================
 
 function formatSignal(signal) {
@@ -210,7 +253,9 @@ ${reasonText}
 // TELEGRAM
 // ======================================================
 
-async function sendTelegram(text) {
+async function sendTelegram(
+    text
+) {
 
     const token =
         process.env.TELEGRAM_BOT_TOKEN;
@@ -257,35 +302,6 @@ async function sendTelegram(text) {
 
 
 // ======================================================
-// DUPLICATE CHECK
-// ======================================================
-
-async function signalExists(signalKey) {
-
-    const {
-        data,
-        error
-    } = await supabase
-        .from("signals")
-        .select("id")
-        .eq(
-            "signal_key",
-            signalKey
-        )
-        .limit(1);
-
-    if (error) {
-        throw error;
-    }
-
-    return (
-        Array.isArray(data) &&
-        data.length > 0
-    );
-}
-
-
-// ======================================================
 // MAIN
 // ======================================================
 
@@ -296,9 +312,9 @@ export default async function handler(
 
     try {
 
-        // ------------------------------------------------
-        // OPTIONAL SECRET
-        // ------------------------------------------------
+        // ==================================================
+        // RUN SECRET
+        // ==================================================
 
         const secret =
             process.env.RUN_SECRET;
@@ -326,33 +342,41 @@ export default async function handler(
         }
 
 
-        // ------------------------------------------------
+        // ==================================================
         // CURRENT TIME
-        // ------------------------------------------------
+        // ==================================================
 
         const now =
             new Date();
 
-        const results = [];
+
+        // ==================================================
+        // MINIMUM SCORE
+        // ==================================================
+
+        const minScore =
+            Number(
+                process.env.MIN_SIGNAL_SCORE ||
+                2
+            );
 
 
-        // ------------------------------------------------
-        // ASSETS
-        // ------------------------------------------------
+        // ==================================================
+        // COLLECT ALL VALID SIGNALS
+        // ==================================================
 
-        const assets = [
-            "EUR/USD",
-            "GBP/USD",
-            "USD/JPY",
-            "AUD/USD"
-        ];
+        const candidates = [];
+
+        const scanResults = [];
 
 
-        // ------------------------------------------------
-        // SCAN ALL ASSETS
-        // ------------------------------------------------
+        // ==================================================
+        // SCAN 4 PAIRS
+        // ==================================================
 
-        for (const asset of assets) {
+        for (
+            const asset of ASSETS
+        ) {
 
             try {
 
@@ -361,12 +385,13 @@ export default async function handler(
                         asset
                     );
 
+
                 if (
                     !candles ||
                     candles.length < 60
                 ) {
 
-                    results.push({
+                    scanResults.push({
                         asset,
                         status:
                             "NOT_ENOUGH_CANDLES"
@@ -376,18 +401,19 @@ export default async function handler(
                 }
 
 
-                // ----------------------------------------
-                // ONLY CLOSED CANDLE
-                // ----------------------------------------
+                // ------------------------------------------
+                // CLOSED CANDLE
+                // ------------------------------------------
 
                 const latestClosed =
                     getLatestClosedCandle(
                         candles
                     );
 
+
                 if (!latestClosed) {
 
-                    results.push({
+                    scanResults.push({
                         asset,
                         status:
                             "NO_CLOSED_CANDLE"
@@ -397,9 +423,9 @@ export default async function handler(
                 }
 
 
-                // ----------------------------------------
-                // REMOVE CURRENT IN-PROGRESS CANDLE
-                // ----------------------------------------
+                // ------------------------------------------
+                // ONLY CLOSED CANDLES
+                // ------------------------------------------
 
                 const analysisCandles =
                     candles.filter(
@@ -409,24 +435,21 @@ export default async function handler(
                     );
 
 
-                // ----------------------------------------
+                // ------------------------------------------
                 // ANALYZE
-                // ----------------------------------------
+                // ------------------------------------------
 
                 const signal =
                     analyze(
                         asset,
                         analysisCandles,
-                        Number(
-                            process.env.MIN_SIGNAL_SCORE ||
-                            2
-                        )
+                        minScore
                     );
 
 
                 if (!signal) {
 
-                    results.push({
+                    scanResults.push({
                         asset,
                         status:
                             "NO_SIGNAL"
@@ -436,18 +459,9 @@ export default async function handler(
                 }
 
 
-                // ----------------------------------------
-                // FORCE ENTRY = NEXT + 1 MINUTE
-                //
-                // Source candle:
-                // 23:30
-                //
-                // Entry:
-                // 23:32
-                //
-                // Expiration:
-                // 23:33
-                // ----------------------------------------
+                // ------------------------------------------
+                // ENTRY = SOURCE CANDLE + 2 MINUTES
+                // ------------------------------------------
 
                 const sourceTime =
                     latestClosed.time;
@@ -467,178 +481,59 @@ export default async function handler(
                     );
 
 
-                // ----------------------------------------
-                // SIGNAL MUST BE FUTURE
-                // ----------------------------------------
+                // ------------------------------------------
+                // ENTRY MUST BE FUTURE
+                // ------------------------------------------
 
                 if (
                     entryTime.getTime() <=
                     now.getTime()
                 ) {
 
-                    results.push({
+                    scanResults.push({
                         asset,
                         status:
-                            "ENTRY_TIME_PASSED",
-                        entryTime:
-                            entryTime.toISOString()
+                            "ENTRY_TIME_PASSED"
                     });
 
                     continue;
                 }
 
 
-                // ----------------------------------------
-                // SIGNAL KEY
-                // ----------------------------------------
+                // ------------------------------------------
+                // ADD TO CANDIDATES
+                // ------------------------------------------
 
-                const signalKey =
-                    [
-                        asset,
-                        signal.direction,
-                        entryTime.toISOString()
-                    ].join("_");
+                candidates.push({
 
+                    ...signal,
 
-                // ----------------------------------------
-                // DUPLICATE CHECK
-                // ----------------------------------------
+                    entryTime:
+                        entryTime.toISOString(),
 
-                if (
-                    await signalExists(
-                        signalKey
-                    )
-                ) {
+                    expiryTime:
+                        expiryTime.toISOString(),
 
-                    results.push({
-                        asset,
-                        status:
-                            "DUPLICATE",
-                        direction:
-                            signal.direction,
-                        entryTime:
-                            entryTime.toISOString()
-                    });
+                    sourceTime:
+                        sourceTime.toISOString()
 
-                    continue;
-                }
+                });
 
 
-                // ----------------------------------------
-                // SAVE SIGNAL
-                //
-                // Result remains PENDING only as
-                // database record.
-                //
-                // It is NOT used for WIN/LOSS.
-                // ----------------------------------------
-
-                const {
-                    data: inserted,
-                    error: insertError
-                } = await supabase
-                    .from("signals")
-                    .insert({
-                        asset,
-
-                        direction:
-                            signal.direction,
-
-                        score:
-                            signal.score,
-
-                        signal_key:
-                            signalKey,
-
-                        signal_time:
-                            now.toISOString(),
-
-                        entry_time:
-                            entryTime.toISOString(),
-
-                        entry_price:
-                            null,
-
-                        result:
-                            "PENDING",
-
-                        reasons:
-                            signal.reasons,
-
-                        timeframe:
-                            TIMEFRAME,
-
-                        expiration_minutes:
-                            EXPIRATION_MINUTES,
-
-                        expiry_time:
-                            expiryTime.toISOString(),
-
-                        source_candle_time:
-                            sourceTime.toISOString(),
-
-                        result_price:
-                            null,
-
-                        result_time:
-                            null,
-
-                        settled_at:
-                            null
-                    })
-                    .select()
-                    .single();
-
-
-                if (insertError) {
-                    throw insertError;
-                }
-
-
-                // ----------------------------------------
-                // SEND TELEGRAM
-                // ----------------------------------------
-
-                const telegramText =
-                    formatSignal({
-                        ...signal,
-
-                        entryTime:
-                            entryTime.toISOString(),
-
-                        expiryTime:
-                            expiryTime.toISOString()
-                    });
-
-                await sendTelegram(
-                    telegramText
-                );
-
-
-                // ----------------------------------------
-                // RESULT
-                // ----------------------------------------
-
-                results.push({
+                scanResults.push({
                     asset,
                     status:
-                        "SIGNAL_SENT",
+                        "CANDIDATE",
                     direction:
                         signal.direction,
                     score:
-                        signal.score,
-                    entryTime:
-                        entryTime.toISOString(),
-                    expiration:
-                        EXPIRATION_MINUTES,
-                    signalId:
-                        inserted.id
+                        signal.score
                 });
 
             }
             catch (error) {
 
-                results.push({
+                scanResults.push({
                     asset,
                     status:
                         "ERROR",
@@ -649,9 +544,210 @@ export default async function handler(
         }
 
 
-        // ------------------------------------------------
+        // ==================================================
+        // NO SIGNAL
+        // ==================================================
+
+        if (
+            candidates.length === 0
+        ) {
+
+            return res
+                .status(200)
+                .json({
+
+                    ok: true,
+
+                    mode:
+                        "SIGNAL_ONLY",
+
+                    selected:
+                        null,
+
+                    message:
+                        "Tidak ada signal yang memenuhi syarat.",
+
+                    scanResults
+
+                });
+        }
+
+
+        // ==================================================
+        // SELECT BEST SIGNAL
+        // ==================================================
+
+        candidates.sort(
+            (a, b) => {
+
+                // Score tertinggi terlebih dahulu
+                if (
+                    b.score !==
+                    a.score
+                ) {
+
+                    return (
+                        b.score -
+                        a.score
+                    );
+                }
+
+                // Jika score sama,
+                // pilih entry paling dekat
+                return (
+                    new Date(
+                        a.entryTime
+                    ).getTime() -
+                    new Date(
+                        b.entryTime
+                    ).getTime()
+                );
+            }
+        );
+
+
+        const bestSignal =
+            candidates[0];
+
+
+        // ==================================================
+        // SIGNAL KEY
+        // ==================================================
+
+        const signalKey =
+            [
+                bestSignal.asset,
+                bestSignal.direction,
+                bestSignal.entryTime
+            ].join("_");
+
+
+        // ==================================================
+        // DUPLICATE CHECK
+        // ==================================================
+
+        if (
+            await signalExists(
+                signalKey
+            )
+        ) {
+
+            return res
+                .status(200)
+                .json({
+
+                    ok: true,
+
+                    mode:
+                        "SIGNAL_ONLY",
+
+                    selected:
+                        bestSignal.asset,
+
+                    status:
+                        "DUPLICATE",
+
+                    direction:
+                        bestSignal.direction,
+
+                    score:
+                        bestSignal.score,
+
+                    entryTime:
+                        bestSignal.entryTime,
+
+                    scanResults
+
+                });
+        }
+
+
+        // ==================================================
+        // SAVE ONLY SELECTED SIGNAL
+        // ==================================================
+
+        const {
+            data: inserted,
+            error: insertError
+        } = await supabase
+            .from("signals")
+            .insert({
+
+                asset:
+                    bestSignal.asset,
+
+                direction:
+                    bestSignal.direction,
+
+                score:
+                    bestSignal.score,
+
+                signal_key:
+                    signalKey,
+
+                signal_time:
+                    now.toISOString(),
+
+                entry_time:
+                    bestSignal.entryTime,
+
+                entry_price:
+                    null,
+
+                result:
+                    "PENDING",
+
+                reasons:
+                    bestSignal.reasons,
+
+                timeframe:
+                    TIMEFRAME,
+
+                expiration_minutes:
+                    EXPIRATION_MINUTES,
+
+                expiry_time:
+                    bestSignal.expiryTime,
+
+                source_candle_time:
+                    bestSignal.sourceTime,
+
+                result_price:
+                    null,
+
+                result_time:
+                    null,
+
+                settled_at:
+                    null
+
+            })
+            .select()
+            .single();
+
+
+        if (insertError) {
+            throw insertError;
+        }
+
+
+        // ==================================================
+        // SEND ONLY ONE TELEGRAM SIGNAL
+        // ==================================================
+
+        const telegramText =
+            formatSignal(
+                bestSignal
+            );
+
+        await sendTelegram(
+            telegramText
+        );
+
+
+        // ==================================================
         // RESPONSE
-        // ------------------------------------------------
+        // ==================================================
 
         return res
             .status(200)
@@ -662,16 +758,42 @@ export default async function handler(
                 mode:
                     "SIGNAL_ONLY",
 
-                timeframe:
-                    TIMEFRAME,
+                selected:
+                    bestSignal.asset,
 
-                expirationMinutes:
+                status:
+                    "SIGNAL_SENT",
+
+                direction:
+                    bestSignal.direction,
+
+                score:
+                    bestSignal.score,
+
+                entryTime:
+                    bestSignal.entryTime,
+
+                expiration:
                     EXPIRATION_MINUTES,
 
-                timezone:
-                    TIMEZONE,
+                signalId:
+                    inserted.id,
 
-                results
+                scanned:
+                    ASSETS,
+
+                candidates:
+                    candidates.map(
+                        item => ({
+                            asset:
+                                item.asset,
+                            direction:
+                                item.direction,
+                            score:
+                                item.score
+                        })
+                    )
+
             });
 
     }
@@ -682,9 +804,12 @@ export default async function handler(
         return res
             .status(500)
             .json({
+
                 ok: false,
+
                 error:
                     error.message
+
             });
     }
 }
