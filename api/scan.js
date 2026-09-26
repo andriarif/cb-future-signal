@@ -1,12 +1,14 @@
 // api/scan.js
 // CB Future Signal - M1
-// SINGLE BEST SIGNAL + BROKER TIME SYNC
+// SINGLE BEST SIGNAL
+// EMA50 + RSI14
+// WIB Asia/Jakarta
+// OTC OTCharts
 
 import { createClient } from "@supabase/supabase-js";
 import {
   normalizeCandles,
-  analyze,
-  formatSignal
+  analyze
 } from "../signal-engine.js";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -25,14 +27,11 @@ const TELEGRAM_CHAT_ID =
 const MIN_SCORE =
   Number(process.env.MIN_SIGNAL_SCORE || 2);
 
-const TIMEZONE =
-  "Asia/Jakarta";
+const TIMEZONE = "Asia/Jakarta";
 
-const TIMEFRAME =
-  "M1";
+const TIMEFRAME = "M1";
 
-const EXPIRATION_MINUTES =
-  1;
+const EXPIRATION_MINUTES = 1;
 
 const ASSETS = [
   "EUR/USD",
@@ -52,11 +51,9 @@ const supabase = createClient(
 // ======================================================
 
 function symbolFor(asset) {
-
   return asset
     .replace("/", "")
     .toUpperCase() + "_otc";
-
 }
 
 
@@ -65,7 +62,6 @@ function symbolFor(asset) {
 // ======================================================
 
 function formatWIB(date) {
-
   return new Intl.DateTimeFormat(
     "id-ID",
     {
@@ -79,7 +75,24 @@ function formatWIB(date) {
       hour12: false
     }
   ).format(new Date(date));
+}
 
+
+// ======================================================
+// FORMAT JAM WIB
+// ======================================================
+
+function formatTimeWIB(date) {
+  return new Intl.DateTimeFormat(
+    "id-ID",
+    {
+      timeZone: TIMEZONE,
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false
+    }
+  ).format(new Date(date));
 }
 
 
@@ -89,8 +102,7 @@ function formatWIB(date) {
 
 async function getCandles(asset) {
 
-  const symbol =
-    symbolFor(asset);
+  const symbol = symbolFor(asset);
 
   const url =
     `https://otcharts.com/v1/candles` +
@@ -99,45 +111,32 @@ async function getCandles(asset) {
     `&tf=60` +
     `&limit=120`;
 
-  const response =
-    await fetch(
-      url,
-      {
-        method: "GET",
-        headers: {
-          Authorization:
-            `Bearer ${OTCHARTS_API_KEY}`
-        }
+  const response = await fetch(
+    url,
+    {
+      method: "GET",
+      headers: {
+        Authorization:
+          `Bearer ${OTCHARTS_API_KEY}`
       }
-    );
+    }
+  );
 
-  const text =
-    await response.text();
+  const text = await response.text();
 
   if (!response.ok) {
-
     throw new Error(
       `OTCharts ${response.status}: ${text}`
     );
-
   }
 
-  let data;
-
   try {
-
-    data = JSON.parse(text);
-
+    return JSON.parse(text);
   } catch {
-
     throw new Error(
       "Response OTCharts bukan JSON"
     );
-
   }
-
-  return data;
-
 }
 
 
@@ -148,38 +147,93 @@ async function getCandles(asset) {
 async function sendTelegram(text) {
 
   const url =
-    `https://api.telegram.org/bot` +
-    `${TELEGRAM_BOT_TOKEN}/sendMessage`;
+    `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
 
-  const response =
-    await fetch(
-      url,
-      {
-        method: "POST",
+  const response = await fetch(
+    url,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type":
+          "application/json"
+      },
+      body: JSON.stringify({
+        chat_id: TELEGRAM_CHAT_ID,
+        text
+      })
+    }
+  );
 
-        headers: {
-          "Content-Type":
-            "application/json"
-        },
-
-        body: JSON.stringify({
-          chat_id:
-            TELEGRAM_CHAT_ID,
-
-          text
-        })
-      }
-    );
+  const responseText =
+    await response.text();
 
   if (!response.ok) {
-
     throw new Error(
-      `Telegram ${response.status}: ` +
-      await response.text()
+      `Telegram ${response.status}: ${responseText}`
     );
-
   }
 
+  return responseText;
+}
+
+
+// ======================================================
+// FORMAT SIGNAL TELEGRAM
+// ======================================================
+
+function formatSignal(signal) {
+
+  const direction =
+    signal.direction === "CALL"
+      ? "BUY"
+      : "SELL";
+
+  const arrow =
+    signal.direction === "CALL"
+      ? "🟢"
+      : "🔴";
+
+  let text = "";
+
+  text += "⚡ SIGNAL\n\n";
+
+  text += `🌐 ${signal.asset} OTC\n\n`;
+
+  text += `Timeframe: ${TIMEFRAME}\n`;
+
+  text += `⏱ Expiration: ${EXPIRATION_MINUTES} minute\n\n`;
+
+  text += "⏰ Entry:\n";
+
+  text += `${formatTimeWIB(signal.entryTime)} WIB\n\n`;
+
+  text += `${arrow} Direction:\n`;
+
+  text += `${direction}\n\n`;
+
+  text += `📊 Confirmation:\n`;
+
+  text += `${signal.score}/10\n\n`;
+
+  if (
+    Array.isArray(signal.reasons) &&
+    signal.reasons.length > 0
+  ) {
+
+    for (
+      const reason of signal.reasons
+    ) {
+
+      text += `🔎 ${reason}\n`;
+
+    }
+
+    text += "\n";
+  }
+
+  text += "⚠️ Entry sesuai waktu signal";
+
+  return text;
 }
 
 
@@ -189,30 +243,14 @@ async function sendTelegram(text) {
 
 function getLatestClosedCandle(candles) {
 
-  if (!candles.length)
+  if (!candles.length) {
     return null;
+  }
 
-  const now =
-    new Date();
-
-  /*
-    Contoh:
-
-    sekarang 21:37:25
-
-    candle 21:37:00 masih berjalan
-
-    candle terakhir yang CLOSED:
-    21:36:00
-
-    Jadi candle harus:
-    candle.time < awal menit sekarang
-  */
+  const now = Date.now();
 
   const currentMinute =
-    Math.floor(
-      now.getTime() / 60000
-    ) * 60000;
+    Math.floor(now / 60000) * 60000;
 
   const closed =
     candles.filter(
@@ -221,13 +259,11 @@ function getLatestClosedCandle(candles) {
         currentMinute
     );
 
-  if (!closed.length)
+  if (!closed.length) {
     return null;
+  }
 
-  return closed[
-    closed.length - 1
-  ];
-
+  return closed[closed.length - 1];
 }
 
 
@@ -251,7 +287,6 @@ async function analyzeAsset(asset) {
       error:
         `Candle kurang: ${candles.length}`
     };
-
   }
 
   const closedCandle =
@@ -265,14 +300,7 @@ async function analyzeAsset(asset) {
       error:
         "Tidak ada candle M1 closed"
     };
-
   }
-
-  /*
-    analyze() menggunakan candle terakhir.
-    Jadi kita potong data sampai candle
-    yang benar-benar sudah CLOSED.
-  */
 
   const closedCandles =
     candles.filter(
@@ -288,40 +316,35 @@ async function analyzeAsset(asset) {
       MIN_SCORE
     );
 
-  if (!signal)
+  if (!signal) {
+
     return {
       asset,
       signal: null,
       closedCandle
     };
+  }
 
-  /*
-    ENTRY = awal candle berikutnya.
-  */
-
+  // ENTRY = candle berikutnya
   const entryTime =
     new Date(
-      closedCandle.time.getTime()
-      + 60 * 1000
+      closedCandle.time.getTime() +
+      60 * 1000
     );
 
+  // EXPIRY = 1 menit setelah entry
   const expiryTime =
     new Date(
-      entryTime.getTime()
-      + EXPIRATION_MINUTES * 60 * 1000
+      entryTime.getTime() +
+      EXPIRATION_MINUTES * 60 * 1000
     );
 
   const now =
-    new Date();
+    Date.now();
 
-  /*
-    Jangan pernah kirim signal
-    kalau entry sudah lewat.
-  */
-
+  // Jangan kirim signal kalau entry sudah lewat
   if (
-    entryTime.getTime()
-    <= now.getTime()
+    entryTime.getTime() <= now
   ) {
 
     return {
@@ -331,7 +354,6 @@ async function analyzeAsset(asset) {
       closedCandle,
       entryTime
     };
-
   }
 
   signal.entryTime =
@@ -354,7 +376,6 @@ async function analyzeAsset(asset) {
     signal,
     closedCandle
   };
-
 }
 
 
@@ -369,11 +390,9 @@ export default async function handler(
 
   try {
 
-    /*
-      ==================================================
-      1. CEK PENDING
-      ==================================================
-    */
+    // ==================================================
+    // 1. CEK PENDING
+    // ==================================================
 
     const {
       data: pending,
@@ -396,16 +415,16 @@ export default async function handler(
         )
         .limit(1);
 
-    if (pendingError)
+    if (pendingError) {
       throw new Error(
-        pendingError.message
+        `Supabase PENDING: ${pendingError.message}`
       );
+    }
 
 
-    /*
-      Kalau masih ada PENDING,
-      JANGAN buat signal baru.
-    */
+    // ==================================================
+    // MASIH ADA PENDING
+    // ==================================================
 
     if (
       pending &&
@@ -463,19 +482,14 @@ export default async function handler(
 
           result:
             p.result
-
         }
-
       });
-
     }
 
 
-    /*
-      ==================================================
-      2. SCAN SEMUA ASSET
-      ==================================================
-    */
+    // ==================================================
+    // 2. SCAN SEMUA ASSET
+    // ==================================================
 
     const results = [];
 
@@ -503,12 +517,11 @@ export default async function handler(
 
             error:
               result.error
-
           });
 
           continue;
-
         }
+
 
         if (result.stale) {
 
@@ -520,13 +533,17 @@ export default async function handler(
               "STALE",
 
             entryTime:
-              result.entryTime
+              result.entryTime,
 
+            entryWIB:
+              formatWIB(
+                result.entryTime
+              )
           });
 
           continue;
-
         }
+
 
         if (!result.signal) {
 
@@ -536,12 +553,11 @@ export default async function handler(
 
             status:
               "NO_SIGNAL"
-
           });
 
           continue;
-
         }
+
 
         const signal =
           result.signal;
@@ -570,7 +586,6 @@ export default async function handler(
             formatWIB(
               signal.entryTime
             )
-
         });
 
       } catch (error) {
@@ -583,20 +598,16 @@ export default async function handler(
             "ERROR",
 
           error:
-            error.message
-
+            error?.message ||
+            String(error)
         });
-
       }
-
     }
 
 
-    /*
-      ==================================================
-      3. TIDAK ADA SIGNAL
-      ==================================================
-    */
+    // ==================================================
+    // 3. TIDAK ADA SIGNAL
+    // ==================================================
 
     if (
       candidates.length === 0
@@ -605,6 +616,9 @@ export default async function handler(
       return res.status(200).json({
 
         ok: true,
+
+        status:
+          "NO_SIGNAL",
 
         timeframe:
           TIMEFRAME,
@@ -619,39 +633,31 @@ export default async function handler(
           0,
 
         results
-
       });
-
     }
 
 
-    /*
-      ==================================================
-      4. PILIH SCORE TERTINGGI
-      ==================================================
-    */
+    // ==================================================
+    // 4. PILIH SCORE TERTINGGI
+    // ==================================================
 
     candidates.sort(
       (a, b) => {
 
         if (
-          b.score !==
-          a.score
+          b.score !== a.score
         ) {
 
           return (
             b.score -
             a.score
           );
-
         }
 
         return (
-          new Date(a.entryTime)
-          -
-          new Date(b.entryTime)
+          new Date(a.entryTime).getTime() -
+          new Date(b.entryTime).getTime()
         );
-
       }
     );
 
@@ -660,17 +666,19 @@ export default async function handler(
       candidates[0];
 
 
-    /*
-      ==================================================
-      5. CEK DUPLIKAT
-      ==================================================
-    */
+    // ==================================================
+    // 5. SIGNAL KEY
+    // ==================================================
 
     const signalKey =
       `${selected.asset}|` +
       `${selected.direction}|` +
       `${selected.entryTime}`;
 
+
+    // ==================================================
+    // 6. CEK DUPLIKAT
+    // ==================================================
 
     const {
       data: existing,
@@ -683,16 +691,20 @@ export default async function handler(
           "signal_key",
           signalKey
         )
-        .maybeSingle();
+        .limit(1);
 
+    if (existingError) {
 
-    if (existingError)
       throw new Error(
-        existingError.message
+        `Supabase duplicate check: ${existingError.message}`
       );
+    }
 
 
-    if (existing) {
+    if (
+      existing &&
+      existing.length > 0
+    ) {
 
       return res.status(200).json({
 
@@ -702,20 +714,16 @@ export default async function handler(
           "DUPLICATE",
 
         existingId:
-          existing.id,
+          existing[0].id,
 
         results
-
       });
-
     }
 
 
-    /*
-      ==================================================
-      6. SIMPAN PENDING
-      ==================================================
-    */
+    // ==================================================
+    // 7. SIMPAN PENDING
+    // ==================================================
 
     const {
       data: inserted,
@@ -763,44 +771,43 @@ export default async function handler(
 
           reasons:
             selected.reasons
-
         })
         .select()
         .single();
 
 
-    if (insertError)
+    if (insertError) {
+
       throw new Error(
-        insertError.message
+        `Supabase insert: ${insertError.message}`
       );
+    }
 
 
-    /*
-      ==================================================
-      7. TELEGRAM
-      ==================================================
-    */
+    // ==================================================
+    // 8. TELEGRAM
+    // ==================================================
 
     const telegramText =
       formatSignal(
         selected
       );
 
-
     await sendTelegram(
       telegramText
     );
 
 
-    /*
-      ==================================================
-      8. RESPONSE
-      ==================================================
-    */
+    // ==================================================
+    // 9. RESPONSE
+    // ==================================================
 
     return res.status(200).json({
 
       ok: true,
+
+      status:
+        "SIGNAL_CREATED",
 
       timeframe:
         TIMEFRAME,
@@ -846,15 +853,18 @@ export default async function handler(
 
         result:
           "PENDING"
-
       },
 
       results
-
     });
 
 
   } catch (error) {
+
+    console.error(
+      "SCAN ERROR:",
+      error
+    );
 
     return res.status(500).json({
 
@@ -864,10 +874,8 @@ export default async function handler(
         "SCAN",
 
       error:
-        error.message
-
+        error?.message ||
+        String(error)
     });
-
   }
-
 }
