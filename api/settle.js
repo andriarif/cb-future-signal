@@ -1,6 +1,7 @@
 // api/settle.js
 // CB Future Signal - M1 Settlement
 // WIN / LOSS ONLY AFTER EXPIRATION
+// OTCharts -2 Hours Correction
 
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -31,6 +32,10 @@ const TIMEFRAME =
 const EXPIRATION_MINUTES =
   1;
 
+// OTCharts timestamp terbukti +2 jam
+const OTCHARTS_CORRECTION_MS =
+  -2 * 60 * 60 * 1000;
+
 const supabase =
   createClient(
     SUPABASE_URL,
@@ -56,8 +61,9 @@ function formatWIB(date) {
       second: "2-digit",
       hour12: false
     }
-  ).format(new Date(date));
-
+  ).format(
+    new Date(date)
+  );
 }
 
 
@@ -67,11 +73,12 @@ function formatWIB(date) {
 
 function symbolFor(asset) {
 
-  return asset
-    .replace("/", "")
-    .toUpperCase() +
-    "_otc";
-
+  return (
+    asset
+      .replace("/", "")
+      .toUpperCase() +
+    "_otc"
+  );
 }
 
 
@@ -96,6 +103,7 @@ async function getCandles(asset) {
       url,
       {
         method: "GET",
+
         headers: {
           Authorization:
             `Bearer ${OTCHARTS_API_KEY}`
@@ -111,11 +119,38 @@ async function getCandles(asset) {
     throw new Error(
       `OTCharts ${response.status}: ${text}`
     );
-
   }
 
-  return JSON.parse(text);
+  try {
 
+    return JSON.parse(text);
+
+  } catch {
+
+    throw new Error(
+      "Response OTCharts bukan JSON"
+    );
+  }
+}
+
+
+// ======================================================
+// KOREKSI WAKTU OTCHARTS
+// ======================================================
+
+function correctCandleTimes(candles) {
+
+  return candles.map(
+    candle => ({
+      ...candle,
+
+      time:
+        new Date(
+          candle.time.getTime() +
+          OTCHARTS_CORRECTION_MS
+        )
+    })
+  );
 }
 
 
@@ -126,8 +161,7 @@ async function getCandles(asset) {
 async function sendTelegram(text) {
 
   const url =
-    `https://api.telegram.org/bot` +
-    `${TELEGRAM_BOT_TOKEN}/sendMessage`;
+    `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
 
   const response =
     await fetch(
@@ -148,19 +182,20 @@ async function sendTelegram(text) {
           text
 
         })
-
       }
     );
+
+  const responseText =
+    await response.text();
 
   if (!response.ok) {
 
     throw new Error(
-      `Telegram ${response.status}: ` +
-      await response.text()
+      `Telegram ${response.status}: ${responseText}`
     );
-
   }
 
+  return responseText;
 }
 
 
@@ -174,19 +209,73 @@ function findEntryCandle(
 ) {
 
   const target =
-    new Date(entryTime)
-      .getTime();
+    new Date(
+      entryTime
+    ).getTime();
 
-  return (
+  if (
+    !Number.isFinite(target)
+  ) {
+    return null;
+  }
+
+  // ----------------------------------------------------
+  // 1. Cari exact
+  // ----------------------------------------------------
+
+  const exact =
     candles.find(
       candle =>
-        candle.time.getTime()
-        === target
-    )
-    ||
-    null
-  );
+        candle.time.getTime() ===
+        target
+    );
 
+  if (exact) {
+    return exact;
+  }
+
+  // ----------------------------------------------------
+  // 2. Cari candle terdekat
+  //    toleransi maksimal 30 detik
+  // ----------------------------------------------------
+
+  let nearest = null;
+
+  let nearestDiff =
+    Infinity;
+
+  for (
+    const candle of candles
+  ) {
+
+    const diff =
+      Math.abs(
+        candle.time.getTime() -
+        target
+      );
+
+    if (
+      diff < nearestDiff
+    ) {
+
+      nearestDiff =
+        diff;
+
+      nearest =
+        candle;
+    }
+  }
+
+  if (
+    nearest &&
+    nearestDiff <=
+      30 * 1000
+  ) {
+
+    return nearest;
+  }
+
+  return null;
 }
 
 
@@ -201,11 +290,9 @@ export default async function handler(
 
   try {
 
-    /*
-      ==================================================
-      1. AMBIL PENDING
-      ==================================================
-    */
+    // ==================================================
+    // 1. AMBIL PENDING
+    // ==================================================
 
     const {
       data: pending,
@@ -226,12 +313,12 @@ export default async function handler(
         )
         .limit(20);
 
+    if (pendingError) {
 
-    if (pendingError)
       throw new Error(
         pendingError.message
       );
-
+    }
 
     if (
       !pending ||
@@ -254,7 +341,6 @@ export default async function handler(
         results: []
 
       });
-
     }
 
 
@@ -264,11 +350,9 @@ export default async function handler(
     const results = [];
 
 
-    /*
-      ==================================================
-      2. PROSES SATU PER SATU
-      ==================================================
-    */
+    // ==================================================
+    // 2. PROSES PENDING
+    // ==================================================
 
     for (
       const signal of pending
@@ -281,13 +365,12 @@ export default async function handler(
             signal.expiry_time
           );
 
-        /*
-          BELUM EXPIRATION
-        */
+        // ------------------------------------------------
+        // BELUM EXPIRY
+        // ------------------------------------------------
 
         if (
-          now.getTime()
-          <
+          now.getTime() <
           expiryTime.getTime()
         ) {
 
@@ -305,6 +388,11 @@ export default async function handler(
             entryTime:
               signal.entry_time,
 
+            entryWIB:
+              formatWIB(
+                signal.entry_time
+              ),
+
             expiryTime:
               signal.expiry_time,
 
@@ -316,39 +404,63 @@ export default async function handler(
           });
 
           continue;
-
         }
 
 
-        /*
-          ==================================================
-          3. AMBIL DATA CANDLE
-          ==================================================
-        */
+        // =================================================
+        // 3. AMBIL CANDLE M1
+        // =================================================
 
         const raw =
           await getCandles(
             signal.asset
           );
 
-        const candles =
-          normalizeCandles(raw);
+        let candles =
+          normalizeCandles(
+            raw
+          );
+
+        if (
+          candles.length === 0
+        ) {
+
+          results.push({
+
+            id:
+              signal.id,
+
+            asset:
+              signal.asset,
+
+            status:
+              "NO_CANDLES"
+
+          });
+
+          continue;
+        }
 
 
-        /*
-          ENTRY CANDLE =
-          candle yang dimulai tepat
-          pada entry_time.
+        // =================================================
+        // 4. KOREKSI -2 JAM
+        // =================================================
 
-          Contoh:
+        candles =
+          correctCandleTimes(
+            candles
+          );
 
-          Entry 21:38
-          Candle 21:38 - 21:39
-          Close 21:39
+        candles.sort(
+          (a, b) =>
+            a.time.getTime() -
+            b.time.getTime()
+        );
 
-          Itulah candle yang menentukan
-          WIN / LOSS.
-        */
+
+        // =================================================
+        // 5. CARI ENTRY CANDLE
+        // =================================================
 
         const entryCandle =
           findEntryCandle(
@@ -373,38 +485,53 @@ export default async function handler(
             entryTime:
               signal.entry_time,
 
+            entryWIB:
+              formatWIB(
+                signal.entry_time
+              ),
+
             expiryTime:
-              signal.expiry_time
+              signal.expiry_time,
+
+            expiryWIB:
+              formatWIB(
+                signal.expiry_time
+              ),
+
+            latestCandle:
+              candles.length
+                ? candles[
+                    candles.length - 1
+                  ].time.toISOString()
+                : null,
+
+            latestCandleWIB:
+              candles.length
+                ? formatWIB(
+                    candles[
+                      candles.length - 1
+                    ].time
+                  )
+                : null
 
           });
 
           continue;
-
         }
 
 
-        /*
-          ==================================================
-          4. PASTIKAN CANDLE SUDAH CLOSED
-          ==================================================
-        */
+        // =================================================
+        // 6. PASTIKAN ENTRY CANDLE SUDAH CLOSED
+        // =================================================
 
         const candleCloseTime =
           new Date(
-            entryCandle.time.getTime()
-            +
+            entryCandle.time.getTime() +
             60 * 1000
           );
 
-
-        /*
-          Kalau candle belum selesai,
-          JANGAN settlement.
-        */
-
         if (
-          now.getTime()
-          <
+          now.getTime() <
           candleCloseTime.getTime()
         ) {
 
@@ -423,22 +550,29 @@ export default async function handler(
               entryCandle.time
                 .toISOString(),
 
+            candleWIB:
+              formatWIB(
+                entryCandle.time
+              ),
+
             expectedClose:
               candleCloseTime
-                .toISOString()
+                .toISOString(),
+
+            expectedCloseWIB:
+              formatWIB(
+                candleCloseTime
+              )
 
           });
 
           continue;
-
         }
 
 
-        /*
-          ==================================================
-          5. HARGA ENTRY & CLOSE
-          ==================================================
-        */
+        // =================================================
+        // 7. HARGA
+        // =================================================
 
         const entryPrice =
           Number(
@@ -450,12 +584,10 @@ export default async function handler(
             entryCandle.close
           );
 
-
         if (
           !Number.isFinite(
             entryPrice
-          )
-          ||
+          ) ||
           !Number.isFinite(
             resultPrice
           )
@@ -475,15 +607,12 @@ export default async function handler(
           });
 
           continue;
-
         }
 
 
-        /*
-          ==================================================
-          6. HITUNG WIN / LOSS
-          ==================================================
-        */
+        // =================================================
+        // 8. HITUNG RESULT
+        // =================================================
 
         let result;
 
@@ -497,56 +626,52 @@ export default async function handler(
             entryPrice
           ) {
 
-            result = "WIN";
+            result =
+              "WIN";
 
-          }
-          else if (
+          } else if (
             resultPrice <
             entryPrice
           ) {
 
-            result = "LOSS";
+            result =
+              "LOSS";
 
+          } else {
+
+            result =
+              "DRAW";
           }
-          else {
 
-            result = "DRAW";
-
-          }
-
-        }
-        else {
+        } else {
 
           if (
             resultPrice <
             entryPrice
           ) {
 
-            result = "WIN";
+            result =
+              "WIN";
 
-          }
-          else if (
+          } else if (
             resultPrice >
             entryPrice
           ) {
 
-            result = "LOSS";
+            result =
+              "LOSS";
 
+          } else {
+
+            result =
+              "DRAW";
           }
-          else {
-
-            result = "DRAW";
-
-          }
-
         }
 
 
-        /*
-          ==================================================
-          7. UPDATE DATABASE
-          ==================================================
-        */
+        // =================================================
+        // 9. UPDATE DATABASE
+        // =================================================
 
         const {
           error: updateError
@@ -572,20 +697,23 @@ export default async function handler(
             .eq(
               "id",
               signal.id
+            )
+            .eq(
+              "result",
+              "PENDING"
             );
 
+        if (updateError) {
 
-        if (updateError)
           throw new Error(
             updateError.message
           );
+        }
 
 
-        /*
-          ==================================================
-          8. TELEGRAM RESULT
-          ==================================================
-        */
+        // =================================================
+        // 10. TELEGRAM RESULT
+        // =================================================
 
         const emoji =
           result === "WIN"
@@ -594,16 +722,13 @@ export default async function handler(
               ? "❌"
               : "➖";
 
-
         const directionText =
           signal.direction ===
           "CALL"
             ? "BUY"
             : "SELL";
 
-
         const telegramText =
-
 `${emoji} RESULT
 
 🌐 ${signal.asset} OTC
@@ -625,11 +750,14 @@ Timeframe: M1
 
 ⚠️ Result dihitung setelah expiration.`;
 
-
         await sendTelegram(
           telegramText
         );
 
+
+        // =================================================
+        // 11. RESPONSE
+        // =================================================
 
         results.push({
 
@@ -651,12 +779,27 @@ Timeframe: M1
           entryTime:
             signal.entry_time,
 
+          entryWIB:
+            formatWIB(
+              signal.entry_time
+            ),
+
           expiryTime:
             signal.expiry_time,
 
+          expiryWIB:
+            formatWIB(
+              signal.expiry_time
+            ),
+
           resultTime:
             candleCloseTime
-              .toISOString()
+              .toISOString(),
+
+          resultTimeWIB:
+            formatWIB(
+              candleCloseTime
+            )
 
         });
 
@@ -675,14 +818,17 @@ Timeframe: M1
             "ERROR",
 
           error:
-            error.message
+            error?.message ||
+            String(error)
 
         });
-
       }
-
     }
 
+
+    // ==================================================
+    // RESPONSE
+    // ==================================================
 
     return res.status(200).json({
 
@@ -690,6 +836,12 @@ Timeframe: M1
 
       timeframe:
         TIMEFRAME,
+
+      timezone:
+        TIMEZONE,
+
+      correction:
+        "-2 hours OTCharts",
 
       expirationMinutes:
         EXPIRATION_MINUTES,
@@ -712,10 +864,9 @@ Timeframe: M1
         "SETTLE",
 
       error:
-        error.message
+        error?.message ||
+        String(error)
 
     });
-
   }
-
 }
