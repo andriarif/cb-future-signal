@@ -32,32 +32,10 @@ function json(data, status = 200) {
   );
 }
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function getErrorInfo(error) {
-  return {
-    name: error?.name || null,
-    message: error?.message || null,
-    cause: error?.cause
-      ? {
-          name: error.cause.name || null,
-          code: error.cause.code || null,
-          message: error.cause.message || null
-        }
-      : null
-  };
-}
-
-
-// ============================================================
-// OTCHARTS CANDLES
-// ============================================================
-
 async function getCandles(asset) {
 
-  const key = process.env.OTCHARTS_API_KEY;
+  const key =
+    process.env.OTCHARTS_API_KEY;
 
   if (!key) {
     throw new Error(
@@ -93,124 +71,50 @@ async function getCandles(asset) {
     "250"
   );
 
+  const response =
+    await fetch(
+      url,
+      {
+        method: "GET",
 
-  let lastError = null;
+        headers: {
+          "accept": "application/json",
+          "authorization":
+            `Bearer ${key}`
+        },
 
-
-  // ==========================================================
-  // RETRY 3X
-  // ==========================================================
-
-  for (let attempt = 1; attempt <= 3; attempt++) {
-
-    try {
-
-      const response = await fetch(
-        url,
-        {
-          method: "GET",
-
-          headers: {
-            "accept": "application/json",
-            "authorization": `Bearer ${key}`,
-            "user-agent": "CB-Future-Signal/1.0"
-          },
-
-          cache: "no-store"
-        }
-      );
-
-
-      // ------------------------------------------------------
-      // HTTP ERROR
-      // ------------------------------------------------------
-
-      if (!response.ok) {
-
-        const body =
-          await response.text();
-
-        throw new Error(
-          `OTCharts HTTP ${response.status} ` +
-          `${response.statusText} ` +
-          `${body}`
-        );
+        cache: "no-store"
       }
+    );
 
+  if (!response.ok) {
 
-      // ------------------------------------------------------
-      // JSON
-      // ------------------------------------------------------
+    const body =
+      await response.text();
 
-      const data =
-        await response.json();
-
-
-      if (!data) {
-        throw new Error(
-          "OTCharts response kosong."
-        );
-      }
-
-
-      if (!Array.isArray(data.candles)) {
-        throw new Error(
-          "OTCharts format candles tidak valid."
-        );
-      }
-
-
-      if (data.candles.length === 0) {
-        throw new Error(
-          "OTCharts candles kosong."
-        );
-      }
-
-
-      return data.candles;
-
-
-    } catch (error) {
-
-      lastError = error;
-
-
-      // Kalau masih ada retry
-      if (attempt < 3) {
-
-        await sleep(
-          700 * attempt
-        );
-
-      }
-
-    }
-
+    throw new Error(
+      `OTCharts ${asset}: ` +
+      `HTTP ${response.status} ` +
+      `${response.statusText} ` +
+      `${body}`
+    );
   }
 
+  const data =
+    await response.json();
 
-  // ==========================================================
-  // SEMUA RETRY GAGAL
-  // ==========================================================
+  if (
+    !data ||
+    !Array.isArray(data.candles)
+  ) {
+    throw new Error(
+      `OTCharts ${asset}: ` +
+      `format candles tidak valid.`
+    );
+  }
 
-  const info =
-    getErrorInfo(lastError);
-
-  throw new Error(
-    `OTCharts FETCH FAILED | ` +
-    `asset=${asset} | ` +
-    `symbol=${symbol} | ` +
-    `attempts=3 | ` +
-    `name=${info.name} | ` +
-    `message=${info.message} | ` +
-    `cause=${JSON.stringify(info.cause)}`
-  );
+  return data.candles;
 }
-
-
-// ============================================================
-// TELEGRAM
-// ============================================================
 
 async function sendTelegram(message) {
 
@@ -247,34 +151,27 @@ async function sendTelegram(message) {
       }
     );
 
-
   if (!response.ok) {
 
     const body =
       await response.text();
 
     throw new Error(
-      `Telegram HTTP ${response.status}: ${body}`
+      `Telegram HTTP ` +
+      `${response.status}: ${body}`
     );
   }
 
   return response.json();
 }
 
-
-// ============================================================
-// PROCESS ASSET
-// ============================================================
-
 async function processAsset(asset) {
 
   const raw =
     await getCandles(asset);
 
-
   const candles =
     normalizeCandles(raw);
-
 
   if (candles.length < 220) {
 
@@ -287,11 +184,6 @@ async function processAsset(asset) {
     };
   }
 
-
-  // ==========================================================
-  // MIN SCORE = 2
-  // ==========================================================
-
   const signal =
     analyze(
       asset,
@@ -300,7 +192,6 @@ async function processAsset(asset) {
         process.env.MIN_SCORE || 2
       )
     );
-
 
   if (!signal) {
 
@@ -311,16 +202,10 @@ async function processAsset(asset) {
     };
   }
 
-
   const signalKey =
     `${asset}:` +
     `${candleKey(signal.signalTime)}:` +
     `${signal.direction}`;
-
-
-  // ==========================================================
-  // DUPLICATE CHECK
-  // ==========================================================
 
   const {
     data: existing,
@@ -333,11 +218,9 @@ async function processAsset(asset) {
       .eq("signal_key", signalKey)
       .maybeSingle();
 
-
   if (checkError) {
     throw checkError;
   }
-
 
   if (existing) {
 
@@ -347,11 +230,6 @@ async function processAsset(asset) {
       signalKey
     };
   }
-
-
-  // ==========================================================
-  // SAVE SIGNAL
-  // ==========================================================
 
   const row = {
 
@@ -385,7 +263,6 @@ async function processAsset(asset) {
       signal.reasons
   };
 
-
   const {
     error: insertError
   } =
@@ -393,15 +270,9 @@ async function processAsset(asset) {
       .from("signals")
       .insert(row);
 
-
   if (insertError) {
     throw insertError;
   }
-
-
-  // ==========================================================
-  // SEND TELEGRAM
-  // ==========================================================
 
   await sendTelegram(
     formatSignal(
@@ -410,7 +281,6 @@ async function processAsset(asset) {
       "Asia/Jakarta"
     )
   );
-
 
   return {
 
@@ -436,11 +306,6 @@ async function processAsset(asset) {
   };
 }
 
-
-// ============================================================
-// GET /api/scan
-// ============================================================
-
 export async function GET(request) {
 
   try {
@@ -448,11 +313,11 @@ export async function GET(request) {
     const url =
       new URL(request.url);
 
-
     const secret =
       url.searchParams.get("secret") ||
-      request.headers.get("x-cron-secret");
-
+      request.headers.get(
+        "x-cron-secret"
+      );
 
     if (
       process.env.CRON_SECRET &&
@@ -468,13 +333,7 @@ export async function GET(request) {
       );
     }
 
-
     const results = [];
-
-
-    // ========================================================
-    // SCAN SATU PER SATU
-    // ========================================================
 
     for (
       const asset of ASSETS
@@ -496,18 +355,10 @@ export async function GET(request) {
             "ERROR",
 
           error:
-            error.message,
-
-          detail:
-            getErrorInfo(error)
+            error.message
         });
       }
-
-
-      // jeda kecil antar pair
-      await sleep(300);
     }
-
 
     return json({
 
@@ -528,18 +379,12 @@ export async function GET(request) {
 
     });
 
-
   } catch (error) {
 
     return json(
       {
         ok: false,
-
-        error:
-          error.message,
-
-        detail:
-          getErrorInfo(error)
+        error: error.message
       },
       500
     );
