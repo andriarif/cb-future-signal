@@ -1,5 +1,5 @@
 // api/scan.js
-// CB Future Signal - SIGNAL ONLY FINAL
+// CB Future Signal - SIGNAL ONLY + IMAGE
 //
 // Strategy:
 // M1 EMA50 + RSI14 + Candle Confirmation
@@ -8,12 +8,12 @@
 // - Scan 4 OTC pairs
 // - Select 1 best signal
 // - Cooldown 5 minutes
-// - Telegram SIGNAL ONLY
-// - No entry price
-// - No expiration price
-// - No tick price
+// - Telegram sends IMAGE + CAPTION
+// - No Entry Price
+// - No Expiration Price
+// - No Tick Price
 // - No WIN / LOSS
-// - No settlement
+// - No Settlement
 // - Timezone Asia/Jakarta
 
 import { createClient } from "@supabase/supabase-js";
@@ -34,7 +34,7 @@ const TIMEFRAME = "M1";
 
 const EXPIRATION_MINUTES = 1;
 
-// Cooldown antar signal Telegram
+// Cooldown antar signal
 const COOLDOWN_MINUTES = 5;
 
 // OTCharts OTC timestamp correction
@@ -52,6 +52,26 @@ const ASSETS = [
     "USD/JPY",
     "AUD/USD"
 ];
+
+
+// ======================================================
+// TELEGRAM IMAGE
+// ======================================================
+//
+// File berada di:
+// api/signal-buy.jpg
+// api/signal-sell.jpg
+//
+// Repository:
+// andriarif/cb-future-signal
+//
+// ======================================================
+
+const BUY_IMAGE_URL =
+    "https://raw.githubusercontent.com/andriarif/cb-future-signal/main/api/signal-buy.jpg";
+
+const SELL_IMAGE_URL =
+    "https://raw.githubusercontent.com/andriarif/cb-future-signal/main/api/signal-sell.jpg";
 
 
 // ======================================================
@@ -81,9 +101,7 @@ function symbolFor(asset) {
 // OTCHARTS TIME CORRECTION
 // ======================================================
 
-function correctCandleTimes(
-    candles
-) {
+function correctCandleTimes(candles) {
 
     return candles.map(candle => ({
 
@@ -102,9 +120,7 @@ function correctCandleTimes(
 // GET M1 CANDLES
 // ======================================================
 
-async function getCandles(
-    asset
-) {
+async function getCandles(asset) {
 
     const symbol =
         symbolFor(asset);
@@ -158,20 +174,12 @@ async function getCandles(
 // FORMAT WIB
 // ======================================================
 
-function formatWIB(
-    date
-) {
+function formatWIB(date) {
 
     return new Intl.DateTimeFormat(
         "id-ID",
         {
             timeZone: TIMEZONE,
-
-            day: "2-digit",
-
-            month: "2-digit",
-
-            year: "numeric",
 
             hour: "2-digit",
 
@@ -370,12 +378,10 @@ async function getCooldownStatus() {
 
 
 // ======================================================
-// TELEGRAM MESSAGE
+// TELEGRAM CAPTION
 // ======================================================
 
-function formatSignal(
-    signal
-) {
+function formatSignal(signal) {
 
     const direction =
         signal.direction === "CALL"
@@ -438,11 +444,11 @@ ${reasonText}
 
 
 // ======================================================
-// SEND TELEGRAM
+// SEND TELEGRAM PHOTO + CAPTION
 // ======================================================
 
-async function sendTelegram(
-    text
+async function sendTelegramSignal(
+    signal
 ) {
 
     const token =
@@ -464,8 +470,24 @@ async function sendTelegram(
     }
 
 
+    const direction =
+        signal.direction === "CALL"
+            ? "BUY"
+            : "SELL";
+
+
+    const imageUrl =
+        direction === "BUY"
+            ? BUY_IMAGE_URL
+            : SELL_IMAGE_URL;
+
+
+    const caption =
+        formatSignal(signal);
+
+
     const url =
-        `https://api.telegram.org/bot${token}/sendMessage`;
+        `https://api.telegram.org/bot${token}/sendPhoto`;
 
 
     const response =
@@ -487,7 +509,11 @@ async function sendTelegram(
                     chat_id:
                         chatId,
 
-                    text
+                    photo:
+                        imageUrl,
+
+                    caption:
+                        caption
 
                 })
 
@@ -505,6 +531,9 @@ async function sendTelegram(
             `Telegram ${response.status}: ${body.slice(0, 300)}`
         );
     }
+
+
+    return response.json();
 }
 
 
@@ -647,7 +676,6 @@ export default async function handler(
 
         const candidates = [];
 
-
         const scanResults = [];
 
 
@@ -690,7 +718,7 @@ export default async function handler(
 
 
                 // ------------------------------------------
-                // GET CLOSED CANDLE
+                // LATEST CLOSED CANDLE
                 // ------------------------------------------
 
                 const latestClosed =
@@ -717,7 +745,7 @@ export default async function handler(
 
 
                 // ------------------------------------------
-                // USE ONLY CLOSED CANDLES
+                // CLOSED CANDLES ONLY
                 // ------------------------------------------
 
                 const analysisCandles =
@@ -729,7 +757,7 @@ export default async function handler(
 
 
                 // ------------------------------------------
-                // ANALYZE EMA50 + RSI14
+                // ANALYZE
                 // ------------------------------------------
 
                 const signal =
@@ -865,7 +893,7 @@ export default async function handler(
 
 
         // ==================================================
-        // NO CANDIDATE
+        // NO SIGNAL
         // ==================================================
 
         if (
@@ -903,10 +931,7 @@ export default async function handler(
         candidates.sort(
             (a, b) => {
 
-                // ------------------------------------------
-                // 1. SCORE TERTINGGI
-                // ------------------------------------------
-
+                // Score tertinggi
                 if (
                     b.score !==
                     a.score
@@ -919,11 +944,8 @@ export default async function handler(
                 }
 
 
-                // ------------------------------------------
-                // 2. JIKA SCORE SAMA
-                // PILIH ENTRY PALING DEKAT
-                // ------------------------------------------
-
+                // Jika score sama,
+                // entry paling dekat
                 return (
                     new Date(
                         a.entryTime
@@ -1070,17 +1092,11 @@ export default async function handler(
 
 
         // ==================================================
-        // SEND TELEGRAM
+        // SEND IMAGE + CAPTION
         // ==================================================
 
-        const telegramText =
-            formatSignal(
-                bestSignal
-            );
-
-
-        await sendTelegram(
-            telegramText
+        await sendTelegramSignal(
+            bestSignal
         );
 
 
