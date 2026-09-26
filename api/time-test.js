@@ -1,103 +1,291 @@
 // api/time-test.js
 
-export const runtime = "edge";
+const OTCHARTS_API_KEY =
+  process.env.OTCHARTS_API_KEY;
 
-const TIMEZONE = "Asia/Jakarta";
-const TIMEFRAME = 5; // M5
-const EXPIRATION = 5; // 5 menit
+
+const ASSETS = [
+  "EUR/USD",
+  "GBP/USD",
+  "USD/JPY",
+  "AUD/USD"
+];
+
+
+const TIMEZONE =
+  "Asia/Jakarta";
+
+const OFFSET_FIX =
+  2 * 60 * 60 * 1000; // koreksi -2 jam
+
+
+function symbolFor(asset) {
+
+  return `${asset.replace("/", "")}_otc`;
+
+}
 
 
 function formatWIB(date) {
-  return new Intl.DateTimeFormat("id-ID", {
-    timeZone: TIMEZONE,
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false
-  }).format(date);
+
+  return new Intl.DateTimeFormat(
+    "id-ID",
+    {
+      timeZone: TIMEZONE,
+      day:"2-digit",
+      month:"2-digit",
+      year:"numeric",
+      hour:"2-digit",
+      minute:"2-digit",
+      second:"2-digit",
+      hour12:false
+    }
+  ).format(date);
+
 }
 
 
-// hitung candle M5 berikutnya
-function nextCandle(time) {
+// ================================
+// AMBIL CANDLE OTCHARTS
+// ================================
 
-  const d = new Date(time);
+async function getCandles(asset){
 
-  const minute = d.getMinutes();
+  const url =
+    `https://otcharts.com/v1/candles` +
+    `?venue=otc` +
+    `&symbol=${encodeURIComponent(symbolFor(asset))}` +
+    `&tf=300` +
+    `&limit=5`;
 
-  const next =
-    Math.ceil((minute + 1) / TIMEFRAME) * TIMEFRAME;
 
-  d.setMinutes(next);
-  d.setSeconds(0);
-  d.setMilliseconds(0);
+  const response =
+    await fetch(
+      url,
+      {
+        headers:{
+          Authorization:
+            `Bearer ${OTCHARTS_API_KEY}`
+        }
+      }
+    );
 
-  return d;
+
+  if(!response.ok){
+
+    throw new Error(
+      `OTCharts ${response.status}`
+    );
+
+  }
+
+
+  return await response.json();
+
 }
 
 
-function addMinutes(date, min) {
+// ================================
+// TIME PARSER
+// ================================
+
+function parseBrokerTime(value){
+
+  let ms;
+
+
+  if(typeof value === "number"){
+
+    ms =
+      value < 10000000000
+        ? value * 1000
+        : value;
+
+  }
+  else {
+
+    ms =
+      Date.parse(value);
+
+  }
+
+
+  /*
+    OTCharts terbaca +2 jam
+    terhadap WIB broker.
+    Koreksi ke WIB.
+  */
 
   return new Date(
-    date.getTime() + min * 60000
+    ms - OFFSET_FIX
   );
 
 }
 
 
-export async function GET() {
+// ================================
+// MAIN
+// ================================
 
-  const now = new Date();
+export default async function handler(
+  req,
+  res
+){
 
-  const entry = nextCandle(now);
-
-  const expiry = addMinutes(
-    entry,
-    EXPIRATION
-  );
-
-
-  return Response.json({
-
-    ok: true,
-
-    timezone: TIMEZONE,
-
-    timeframe: "M5",
-
-    expirationMinutes: EXPIRATION,
+  try {
 
 
-    botTimeUTC:
-      now.toISOString(),
+    const now =
+      new Date();
 
 
-    botTimeWIB:
-      formatWIB(now),
+    const results = [];
 
 
-    nextEntryUTC:
-      entry.toISOString(),
+    for(
+      const asset of ASSETS
+    ){
+
+      const raw =
+        await getCandles(asset);
 
 
-    nextEntryWIB:
-      formatWIB(entry),
+
+      let rows=[];
 
 
-    expiryUTC:
-      expiry.toISOString(),
+      if(Array.isArray(raw)){
+
+        rows=raw;
+
+      }
+      else if(Array.isArray(raw.candles)){
+
+        rows=raw.candles;
+
+      }
+      else if(Array.isArray(raw.data)){
+
+        rows=raw.data;
+
+      }
 
 
-    expiryWIB:
-      formatWIB(expiry),
+
+      const last =
+        rows[
+          rows.length-1
+        ];
 
 
-    rule:
-      "Signal keluar sebelum Entry. Entry pada candle M5 berikutnya. Expiry +5 menit."
 
-  });
+      const candleTime =
+        parseBrokerTime(
+          last.time ??
+          last.timestamp ??
+          last.ts
+        );
+
+
+
+      const nextEntry =
+        new Date(
+          candleTime.getTime()
+          +
+          5*60*1000
+        );
+
+
+
+      const expiry =
+        new Date(
+          nextEntry.getTime()
+          +
+          5*60*1000
+        );
+
+
+
+      results.push({
+
+        asset,
+
+
+        candleWIB:
+          formatWIB(candleTime),
+
+
+        nextEntryWIB:
+          formatWIB(nextEntry),
+
+
+        expiryWIB:
+          formatWIB(expiry),
+
+
+        candleUTC:
+          candleTime.toISOString(),
+
+
+        nextEntryUTC:
+          nextEntry.toISOString(),
+
+
+        close:
+          last.close ??
+          last.c
+
+      });
+
+
+    }
+
+
+
+    return res.status(200)
+    .json({
+
+      ok:true,
+
+
+      botTimeWIB:
+        formatWIB(now),
+
+
+      botTimeUTC:
+        now.toISOString(),
+
+
+      timezone:
+        TIMEZONE,
+
+
+      timeframe:
+        "M5",
+
+
+      correction:
+        "-2 hours OTCharts",
+
+
+      results
+
+    });
+
+
+  }
+  catch(error){
+
+    return res.status(500)
+    .json({
+
+      ok:false,
+
+      error:
+        error.message
+
+    });
+
+  }
 
 }
