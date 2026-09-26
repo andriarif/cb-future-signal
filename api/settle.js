@@ -1,7 +1,8 @@
 // api/settle.js
-// CB Future Signal - M1 Settlement
+// CB Future Signal - M1 Settlement FINAL
 // Entry Price = OPEN candle entry
-// Result Price = CLOSE candle expiry
+// Expiry Price = CLOSE candle entry
+// OTCharts authentication = Authorization: Bearer
 
 import { createClient } from "@supabase/supabase-js";
 import { normalizeCandles } from "../signal-engine.js";
@@ -10,7 +11,7 @@ const TIMEZONE = "Asia/Jakarta";
 const TIMEFRAME = "M1";
 const EXPIRATION_MINUTES = 1;
 
-// OTCharts timestamp sebelumnya terbukti +2 jam
+// OTCharts timestamp terbukti +2 jam dari WIB
 const OTCHARTS_CORRECTION_MS = -2 * 60 * 60 * 1000;
 
 const supabase = createClient(
@@ -25,7 +26,9 @@ function symbolFor(asset) {
 function correctCandleTimes(candles) {
     return candles.map(c => ({
         ...c,
-        time: new Date(c.time.getTime() + OTCHARTS_CORRECTION_MS)
+        time: new Date(
+            c.time.getTime() + OTCHARTS_CORRECTION_MS
+        )
     }));
 }
 
@@ -41,18 +44,21 @@ async function getCandles(asset) {
 
     const response = await fetch(url, {
         headers: {
-            "X-API-Key": process.env.OTCHARTS_API_KEY
+            Authorization:
+                `Bearer ${process.env.OTCHARTS_API_KEY}`
         }
     });
 
     if (!response.ok) {
         const body = await response.text();
+
         throw new Error(
             `OTCharts ${response.status}: ${body.slice(0, 300)}`
         );
     }
 
     const raw = await response.json();
+
     const candles = normalizeCandles(raw);
 
     return correctCandleTimes(candles);
@@ -61,19 +67,23 @@ async function getCandles(asset) {
 function findCandle(candles, targetTime) {
     const target = targetTime.getTime();
 
-    // Exact match
-    let exact = candles.find(
+    // Cari exact match terlebih dahulu
+    const exact = candles.find(
         c => c.time.getTime() === target
     );
 
-    if (exact) return exact;
+    if (exact) {
+        return exact;
+    }
 
     // Fallback maksimum 30 detik
     let nearest = null;
     let nearestDiff = Infinity;
 
     for (const candle of candles) {
-        const diff = Math.abs(candle.time.getTime() - target);
+        const diff = Math.abs(
+            candle.time.getTime() - target
+        );
 
         if (diff < nearestDiff) {
             nearestDiff = diff;
@@ -104,25 +114,25 @@ function formatWIB(iso) {
 }
 
 function formatPrice(price) {
-    if (!Number.isFinite(Number(price))) return "-";
+    if (!Number.isFinite(Number(price))) {
+        return "-";
+    }
 
-    const n = Number(price);
-
-    if (n >= 100) return n.toFixed(3);
-    if (n >= 10) return n.toFixed(3);
-    if (n >= 1) return n.toFixed(5);
-
-    return n.toFixed(5);
+    return Number(price).toFixed(5);
 }
 
 function resultMessage(signal) {
     const direction =
-        signal.direction === "CALL" ? "BUY" : "SELL";
+        signal.direction === "CALL"
+            ? "BUY"
+            : "SELL";
 
     const resultEmoji =
-        signal.result === "WIN" ? "🟢" :
-        signal.result === "LOSS" ? "🔴" :
-        "⚪";
+        signal.result === "WIN"
+            ? "🟢"
+            : signal.result === "LOSS"
+                ? "🔴"
+                : "⚪";
 
     return (
 `━━━━━━━━━━━━━━━━━━
@@ -151,7 +161,9 @@ async function sendTelegram(text) {
     const chatId = process.env.TELEGRAM_CHAT_ID;
 
     if (!token || !chatId) {
-        throw new Error("Telegram environment variables belum lengkap.");
+        throw new Error(
+            "Telegram environment variables belum lengkap."
+        );
     }
 
     const url =
@@ -170,12 +182,11 @@ async function sendTelegram(text) {
 
     if (!response.ok) {
         const body = await response.text();
+
         throw new Error(
             `Telegram ${response.status}: ${body.slice(0, 300)}`
         );
     }
-
-    return true;
 }
 
 export default async function handler(req, res) {
@@ -183,17 +194,22 @@ export default async function handler(req, res) {
         const now = new Date();
 
         // Ambil signal PENDING yang sudah melewati expiry
-        const { data: signals, error: selectError } =
-            await supabase
-                .from("signals")
-                .select("*")
-                .eq("result", "PENDING")
-                .eq("timeframe", TIMEFRAME)
-                .lte("expiry_time", now.toISOString())
-                .order("expiry_time", {
-                    ascending: true
-                })
-                .limit(20);
+        const {
+            data: signals,
+            error: selectError
+        } = await supabase
+            .from("signals")
+            .select("*")
+            .eq("result", "PENDING")
+            .eq("timeframe", TIMEFRAME)
+            .lte(
+                "expiry_time",
+                now.toISOString()
+            )
+            .order("expiry_time", {
+                ascending: true
+            })
+            .limit(20);
 
         if (selectError) {
             throw selectError;
@@ -202,9 +218,13 @@ export default async function handler(req, res) {
         if (!signals || signals.length === 0) {
             return res.status(200).json({
                 ok: true,
+                timeframe: TIMEFRAME,
+                expirationMinutes:
+                    EXPIRATION_MINUTES,
                 checked: 0,
                 results: [],
-                message: "Tidak ada signal PENDING yang perlu settlement."
+                message:
+                    "Tidak ada signal PENDING yang perlu settlement."
             });
         }
 
@@ -212,78 +232,74 @@ export default async function handler(req, res) {
 
         for (const signal of signals) {
             try {
-                const entryTime = new Date(signal.entry_time);
-                const expiryTime = new Date(signal.expiry_time);
+                const entryTime =
+                    new Date(signal.entry_time);
 
-                // Pastikan expiry benar-benar sudah lewat
-                if (now.getTime() < expiryTime.getTime()) {
+                const expiryTime =
+                    new Date(signal.expiry_time);
+
+                // Pastikan expiry sudah lewat
+                if (
+                    now.getTime() <
+                    expiryTime.getTime()
+                ) {
                     results.push({
                         id: signal.id,
                         status: "WAITING_EXPIRY"
                     });
+
                     continue;
                 }
 
-                const candles = await getCandles(signal.asset);
+                // Ambil candle OTC
+                const candles =
+                    await getCandles(signal.asset);
 
                 if (!candles.length) {
                     results.push({
                         id: signal.id,
                         status: "NO_CANDLES"
                     });
+
                     continue;
                 }
 
                 /*
-                 * Candle ENTRY
+                 * CANDLE ENTRY
                  *
                  * Contoh:
+                 *
                  * Entry 22:46
                  *
-                 * candle 22:46:
-                 * open  = harga OPEN sebenarnya
-                 * close = harga penutupan candle entry
+                 * Candle 22:46:
+                 *
+                 * OPEN  = harga entry
+                 * CLOSE = harga expiry
                  */
-                const entryCandle = findCandle(
-                    candles,
-                    entryTime
-                );
+                const entryCandle =
+                    findCandle(
+                        candles,
+                        entryTime
+                    );
 
                 if (!entryCandle) {
                     results.push({
                         id: signal.id,
-                        status: "ENTRY_CANDLE_NOT_FOUND",
-                        entryTime: signal.entry_time
+                        status:
+                            "ENTRY_CANDLE_NOT_FOUND",
+                        entryTime:
+                            signal.entry_time
                     });
+
                     continue;
                 }
 
                 /*
-                 * Candle EXPIRY
+                 * Pastikan candle entry
+                 * sudah benar-benar selesai.
                  *
-                 * Contoh:
-                 * Expiry 22:47
-                 *
-                 * candle 22:46 adalah candle
-                 * yang berakhir pada 22:47.
-                 *
-                 * Jadi expiry price = CLOSE candle entry.
+                 * Candle 22:46 selesai 22:47.
                  */
-                const expiryCandle = findCandle(
-                    candles,
-                    expiryTime
-                );
-
-                /*
-                 * Karena data candle menggunakan waktu OPEN,
-                 * candle expiry adalah candle yang dibuka
-                 * pada expiryTime.
-                 *
-                 * Untuk binary 22:46 -> 22:47,
-                 * harga expiry adalah CLOSE candle 22:46.
-                 */
-                let finalCandle = entryCandle;
-
                 const entryCandleCloseTime =
                     new Date(
                         entryCandle.time.getTime() +
@@ -296,54 +312,96 @@ export default async function handler(req, res) {
                 ) {
                     results.push({
                         id: signal.id,
-                        status: "ENTRY_CANDLE_NOT_CLOSED",
-                        entryTime: signal.entry_time
+                        status:
+                            "ENTRY_CANDLE_NOT_CLOSED",
+                        entryTime:
+                            signal.entry_time,
+                        candleCloseTime:
+                            entryCandleCloseTime.toISOString()
                     });
+
                     continue;
                 }
 
                 /*
-                 * HARGA ENTRY YANG BARU
+                 * ENTRY PRICE FINAL
                  *
-                 * Gunakan OPEN candle entry.
+                 * Menggunakan OPEN candle entry.
                  */
                 const actualEntryPrice =
                     Number(entryCandle.open);
 
                 /*
-                 * HARGA EXPIRY
+                 * EXPIRY PRICE FINAL
                  *
-                 * Gunakan CLOSE candle entry.
+                 * Menggunakan CLOSE candle entry.
                  */
                 const actualExpiryPrice =
                     Number(entryCandle.close);
 
                 if (
-                    !Number.isFinite(actualEntryPrice) ||
-                    !Number.isFinite(actualExpiryPrice)
+                    !Number.isFinite(
+                        actualEntryPrice
+                    ) ||
+                    !Number.isFinite(
+                        actualExpiryPrice
+                    )
                 ) {
                     results.push({
                         id: signal.id,
-                        status: "INVALID_PRICE"
+                        status: "INVALID_PRICE",
+                        entryOpen:
+                            entryCandle.open,
+                        entryClose:
+                            entryCandle.close
                     });
+
                     continue;
                 }
 
                 let result = "DRAW";
 
-                if (signal.direction === "CALL") {
-                    if (actualExpiryPrice > actualEntryPrice) {
+                /*
+                 * BUY / CALL
+                 *
+                 * Expiry > Entry = WIN
+                 * Expiry < Entry = LOSS
+                 */
+                if (
+                    signal.direction === "CALL"
+                ) {
+                    if (
+                        actualExpiryPrice >
+                        actualEntryPrice
+                    ) {
                         result = "WIN";
-                    } else if (
-                        actualExpiryPrice < actualEntryPrice
+                    }
+                    else if (
+                        actualExpiryPrice <
+                        actualEntryPrice
                     ) {
                         result = "LOSS";
                     }
-                } else if (signal.direction === "PUT") {
-                    if (actualExpiryPrice < actualEntryPrice) {
+                }
+
+                /*
+                 * SELL / PUT
+                 *
+                 * Expiry < Entry = WIN
+                 * Expiry > Entry = LOSS
+                 */
+                else if (
+                    signal.direction === "PUT"
+                ) {
+                    if (
+                        actualExpiryPrice <
+                        actualEntryPrice
+                    ) {
                         result = "WIN";
-                    } else if (
-                        actualExpiryPrice > actualEntryPrice
+                    }
+                    else if (
+                        actualExpiryPrice >
+                        actualEntryPrice
                     ) {
                         result = "LOSS";
                     }
@@ -352,32 +410,49 @@ export default async function handler(req, res) {
                 /*
                  * UPDATE DATABASE
                  *
-                 * Penting:
-                 * entry_price sekarang diganti menjadi
-                 * OPEN candle entry yang sebenarnya.
+                 * entry_price sekarang menjadi
+                 * OPEN candle entry.
+                 *
+                 * result_price menjadi
+                 * CLOSE candle entry.
                  */
-                const { data: updated, error: updateError } =
-                    await supabase
-                        .from("signals")
-                        .update({
-                            entry_price: actualEntryPrice,
-                            result_price: actualExpiryPrice,
-                            result,
-                            result_time: expiryTime.toISOString(),
-                            settled_at: new Date().toISOString()
-                        })
-                        .eq("id", signal.id)
-                        .eq("result", "PENDING")
-                        .select()
-                        .single();
+                const {
+                    data: updated,
+                    error: updateError
+                } = await supabase
+                    .from("signals")
+                    .update({
+                        entry_price:
+                            actualEntryPrice,
+
+                        result_price:
+                            actualExpiryPrice,
+
+                        result,
+
+                        result_time:
+                            expiryTime.toISOString(),
+
+                        settled_at:
+                            new Date().toISOString()
+                    })
+                    .eq(
+                        "id",
+                        signal.id
+                    )
+                    .eq(
+                        "result",
+                        "PENDING"
+                    )
+                    .select()
+                    .single();
 
                 if (updateError) {
                     throw updateError;
                 }
 
                 /*
-                 * Telegram menggunakan data yang
-                 * sudah diperbaiki.
+                 * Kirim RESULT ke Telegram
                  */
                 await sendTelegram(
                     resultMessage(updated)
@@ -386,17 +461,29 @@ export default async function handler(req, res) {
                 results.push({
                     id: signal.id,
                     asset: signal.asset,
-                    direction: signal.direction,
+                    direction:
+                        signal.direction,
+
                     status: "SETTLED",
-                    entryPrice: actualEntryPrice,
-                    expiryPrice: actualExpiryPrice,
+
+                    entryPrice:
+                        actualEntryPrice,
+
+                    expiryPrice:
+                        actualExpiryPrice,
+
                     result
                 });
 
             } catch (error) {
                 results.push({
                     id: signal.id,
+                    asset: signal.asset,
+                    direction:
+                        signal.direction,
+
                     status: "ERROR",
+
                     error: error.message
                 });
             }
@@ -405,7 +492,8 @@ export default async function handler(req, res) {
         return res.status(200).json({
             ok: true,
             timeframe: TIMEFRAME,
-            expirationMinutes: EXPIRATION_MINUTES,
+            expirationMinutes:
+                EXPIRATION_MINUTES,
             checked: signals.length,
             results
         });
