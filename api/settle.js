@@ -19,7 +19,7 @@ function symbolFor(asset) {
   return `${asset.replace("/", "")}_otc`;
 }
 
-async function getCandles(asset, limit = 20) {
+async function getCandles(asset, limit = 30) {
   const url =
     `https://otcharts.com/v1/candles` +
     `?venue=otc` +
@@ -80,6 +80,9 @@ async function sendTelegram(text) {
 
 export default async function handler(req, res) {
   try {
+    /*
+     * Ambil semua signal yang masih PENDING.
+     */
     const { data: signals, error } = await supabase
       .from("signals")
       .select("*")
@@ -107,21 +110,28 @@ export default async function handler(req, res) {
 
     for (const signal of signals) {
       try {
-        const entryTime = new Date(signal.entry_time).getTime();
-        const now = Date.now();
+        const entryTime = new Date(
+          signal.entry_time
+        ).getTime();
 
-        // Pastikan waktu entry sudah tercapai.
-        if (now < entryTime) {
+        if (!Number.isFinite(entryTime)) {
           results.push({
             asset: signal.asset,
-            status: "WAITING",
+            status: "ERROR",
+            error: "ENTRY_TIME_INVALID",
             entryTime: signal.entry_time
           });
 
           continue;
         }
 
-        const rawCandles = await getCandles(signal.asset, 20);
+        /*
+         * Ambil candle terbaru dari OTCharts.
+         */
+        const rawCandles = await getCandles(
+          signal.asset,
+          30
+        );
 
         const candles = rawCandles
           .map(normalizeCandle)
@@ -134,37 +144,60 @@ export default async function handler(req, res) {
           )
           .sort((a, b) => a.time - b.time);
 
-        /*
-         * Entry berada pada candle berikutnya.
-         *
-         * Untuk menentukan hasil, kita gunakan candle M1
-         * setelah entry dan mengambil CLOSE candle tersebut.
-         */
-        const targetEntryCandle = candles.find(
-          c => c.time * 1000 >= entryTime
-        );
-
-        if (!targetEntryCandle) {
+        if (candles.length === 0) {
           results.push({
             asset: signal.asset,
-            status: "WAITING_ENTRY_CANDLE",
-            entryTime: signal.entry_time
+            status: "NO_CANDLES"
           });
 
           continue;
         }
 
-        const targetCloseTime =
-          targetEntryCandle.time * 1000 + 60_000;
+        /*
+         * Waktu candle dalam milliseconds.
+         */
+        const candleTimes = candles.map(
+          c => c.time * 1000
+        );
 
-        // Candle harus sudah benar-benar selesai.
-        if (now < targetCloseTime) {
+        /*
+         * Cari candle entry.
+         *
+         * Kita toleransi perbedaan beberapa detik
+         * pada timestamp.
+         */
+        const tolerance = 30_000;
+
+        let entryIndex = -1;
+
+        for (let i = 0; i < candles.length; i++) {
+          if (
+            Math.abs(
+              candleTimes[i] - entryTime
+            ) <= tolerance
+          ) {
+            entryIndex = i;
+            break;
+          }
+        }
+
+        /*
+         * Kalau candle dengan timestamp persis tidak ditemukan,
+         * cari candle pertama setelah entry.
+         */
+        if (entryIndex === -1) {
+          entryIndex = candles.findIndex(
+            c => c.time * 1000 >= entryTime
+          );
+        }
+
+        if (entryIndex === -1) {
           results.push({
             asset: signal.asset,
-            status: "WAITING_CANDLE_CLOSE",
+            status: "ENTRY_CANDLE_NOT_FOUND",
             entryTime: signal.entry_time,
-            targetCloseTime: new Date(
-              targetCloseTime
+            latestCandleTime: new Date(
+              candles[candles.length - 1].time * 1000
             ).toISOString()
           });
 
@@ -172,24 +205,57 @@ export default async function handler(req, res) {
         }
 
         /*
-         * Cari candle yang close-nya digunakan
-         * untuk menentukan WIN / LOSS.
+         * Candle hasil adalah candle M1 setelah candle entry.
          */
-        const resultCandle = candles.find(
-          c => c.time * 1000 === targetEntryCandle.time * 1000
-        );
+        const resultIndex = entryIndex + 1;
 
-        if (!resultCandle) {
+        if (resultIndex >= candles.length) {
           results.push({
             asset: signal.asset,
-            status: "WAITING_RESULT_CANDLE"
+            status: "WAITING_RESULT_CANDLE",
+            entryTime: signal.entry_time,
+            entryCandle: new Date(
+              candles[entryIndex].time * 1000
+            ).toISOString()
           });
 
           continue;
         }
 
-        const entryPrice = Number(signal.entry_price);
-        const closePrice = Number(resultCandle.close);
+        const entryCandle = candles[entryIndex];
+        const resultCandle = candles[resultIndex];
+
+        /*
+         * Pastikan candle hasil sudah selesai.
+         *
+         * OTCharts candle berikutnya harus sudah memiliki
+         * candle setelahnya agar kita tahu candle tersebut
+         * sudah closed.
+         */
+        if (resultIndex + 1 >= candles.length) {
+          results.push({
+            asset: signal.asset,
+            status: "WAITING_RESULT_CANDLE_CLOSE",
+            entryTime: signal.entry_time,
+            entryCandle: new Date(
+              entryCandle.time * 1000
+            ).toISOString(),
+            resultCandle: new Date(
+              resultCandle.time * 1000
+            ).toISOString()
+          });
+
+          continue;
+        }
+
+        const entryPrice = Number(
+          signal.entry_price
+        );
+
+        const closePrice = Number(
+          resultCandle.close
+        );
+
         const direction = String(
           signal.direction || ""
         ).toUpperCase();
@@ -213,14 +279,15 @@ export default async function handler(req, res) {
         }
 
         /*
-         * Update database.
+         * Update hasil ke Supabase.
          */
-        const { error: updateError } = await supabase
-          .from("signals")
-          .update({
-            result
-          })
-          .eq("id", signal.id);
+        const { error: updateError } =
+          await supabase
+            .from("signals")
+            .update({
+              result
+            })
+            .eq("id", signal.id);
 
         if (updateError) {
           throw new Error(
@@ -229,7 +296,7 @@ export default async function handler(req, res) {
         }
 
         /*
-         * Telegram result.
+         * Kirim hasil ke Telegram.
          */
         const emoji =
           result === "WIN"
@@ -257,6 +324,14 @@ HASIL: ${emoji} ${result}`;
           direction,
           entryPrice,
           closePrice,
+          entryCandleTime:
+            new Date(
+              entryCandle.time * 1000
+            ).toISOString(),
+          resultCandleTime:
+            new Date(
+              resultCandle.time * 1000
+            ).toISOString(),
           result,
           status: "SETTLED"
         });
