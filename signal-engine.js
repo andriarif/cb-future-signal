@@ -1,241 +1,195 @@
-function num(v) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : NaN;
-}
+const BROKER_TIMEZONE = "Etc/GMT-2";
+const M5_MS = 5 * 60 * 1000;
+
+// ==========================================
+// NORMALIZE CANDLES
+// ==========================================
 
 export function normalizeCandles(raw) {
-  let rows = raw;
+  let rows = [];
 
-  if (raw && !Array.isArray(raw)) {
-    for (const k of ["candles", "data", "result", "items"]) {
-      if (Array.isArray(raw[k])) {
-        rows = raw[k];
-        break;
-      }
-    }
+  if (Array.isArray(raw)) {
+    rows = raw;
+  } else if (Array.isArray(raw?.data)) {
+    rows = raw.data;
+  } else if (Array.isArray(raw?.candles)) {
+    rows = raw.candles;
+  } else if (Array.isArray(raw?.data?.candles)) {
+    rows = raw.data.candles;
   }
-
-  if (!Array.isArray(rows)) {
-    throw new Error("Response candle bukan array.");
-  }
-
-  const aliases = {
-    timestamp: "time",
-    ts: "time",
-    datetime: "time",
-    date: "time",
-    o: "open",
-    h: "high",
-    l: "low",
-    c: "close",
-    v: "volume"
-  };
 
   return rows
-    .map(r => {
-      const x = { ...r };
+    .map((c) => {
+      const timeValue =
+        c.time ??
+        c.timestamp ??
+        c.ts ??
+        c.open_time ??
+        c.openTime;
 
-      for (const [a, b] of Object.entries(aliases)) {
-        if (x[b] === undefined && x[a] !== undefined) {
-          x[b] = x[a];
-        }
+      let time;
+
+      if (typeof timeValue === "number") {
+        // Unix seconds / milliseconds
+        time = new Date(
+          timeValue < 1e12
+            ? timeValue * 1000
+            : timeValue
+        );
+      } else {
+        time = new Date(timeValue);
       }
 
-      const t =
-        typeof x.time === "number"
-          ? (
-              x.time > 10000000000
-                ? x.time
-                : x.time * 1000
-            )
-          : Date.parse(x.time);
-
       return {
-        time: new Date(t),
-        open: num(x.open),
-        high: num(x.high),
-        low: num(x.low),
-        close: num(x.close),
-        volume: num(x.volume || 0)
+        time,
+        open: Number(c.open ?? c.o),
+        high: Number(c.high ?? c.h),
+        low: Number(c.low ?? c.l),
+        close: Number(c.close ?? c.c),
+        volume: Number(c.volume ?? c.v ?? 0)
       };
     })
     .filter(
-      x =>
-        !Number.isNaN(x.time.getTime()) &&
-        [
-          x.open,
-          x.high,
-          x.low,
-          x.close
-        ].every(Number.isFinite)
+      (c) =>
+        Number.isFinite(c.time.getTime()) &&
+        Number.isFinite(c.open) &&
+        Number.isFinite(c.high) &&
+        Number.isFinite(c.low) &&
+        Number.isFinite(c.close)
     )
     .sort((a, b) => a.time - b.time);
 }
 
-function ema(values, period) {
-  const k = 2 / (period + 1);
+// ==========================================
+// INDICATORS
+// ==========================================
 
-  const out =
-    Array(values.length).fill(NaN);
-
-  let previous = NaN;
-
-  for (let i = 0; i < values.length; i++) {
-    if (!Number.isFinite(values[i])) {
-      continue;
-    }
-
-    previous =
-      Number.isFinite(previous)
-        ? values[i] * k +
-          previous * (1 - k)
-        : values[i];
-
-    out[i] = previous;
-  }
-
-  return out;
-}
-
-function sma(values, period, index) {
-  if (index < period - 1) {
-    return NaN;
-  }
+function sma(values, period) {
+  if (values.length < period) return null;
 
   let sum = 0;
 
-  for (
-    let i = index - period + 1;
-    i <= index;
-    i++
-  ) {
+  for (let i = values.length - period; i < values.length; i++) {
     sum += values[i];
   }
 
   return sum / period;
 }
 
-function std(values, period, index, mean) {
-  if (index < period - 1) {
-    return NaN;
+function ema(values, period) {
+  if (values.length < period) return null;
+
+  const multiplier = 2 / (period + 1);
+
+  let value = sma(values.slice(0, period), period);
+
+  for (let i = period; i < values.length; i++) {
+    value =
+      (values[i] - value) * multiplier + value;
   }
 
-  let sum = 0;
+  return value;
+}
 
-  for (
-    let i = index - period + 1;
-    i <= index;
-    i++
-  ) {
-    sum +=
-      (values[i] - mean) ** 2;
-  }
+function stddev(values, period) {
+  if (values.length < period) return null;
 
-  return Math.sqrt(sum / period);
+  const recent = values.slice(-period);
+  const mean =
+    recent.reduce((a, b) => a + b, 0) / period;
+
+  const variance =
+    recent.reduce(
+      (sum, value) =>
+        sum + Math.pow(value - mean, 2),
+      0
+    ) / period;
+
+  return Math.sqrt(variance);
 }
 
 function rsi(values, period = 14) {
-  const out =
-    Array(values.length).fill(NaN);
+  if (values.length <= period) return null;
 
-  let gain = 0;
-  let loss = 0;
+  let gains = 0;
+  let losses = 0;
 
-  for (let i = 1; i < values.length; i++) {
+  for (let i = 1; i <= period; i++) {
     const change =
       values[i] - values[i - 1];
 
-    const currentGain =
-      Math.max(change, 0);
-
-    const currentLoss =
-      Math.max(-change, 0);
-
-    if (i <= period) {
-      gain += currentGain;
-      loss += currentLoss;
-
-      if (i === period) {
-        out[i] =
-          loss === 0
-            ? 100
-            : 100 -
-              100 /
-                (1 + gain / loss);
-      }
+    if (change >= 0) {
+      gains += change;
     } else {
-      gain =
-        (gain * (period - 1) +
-          currentGain) /
-        period;
-
-      loss =
-        (loss * (period - 1) +
-          currentLoss) /
-        period;
-
-      out[i] =
-        loss === 0
-          ? 100
-          : 100 -
-            100 /
-              (1 + gain / loss);
+      losses += Math.abs(change);
     }
   }
 
-  return out;
+  let avgGain = gains / period;
+  let avgLoss = losses / period;
+
+  for (let i = period + 1; i < values.length; i++) {
+    const change =
+      values[i] - values[i - 1];
+
+    const gain = Math.max(change, 0);
+    const loss = Math.max(-change, 0);
+
+    avgGain =
+      (avgGain * (period - 1) + gain) /
+      period;
+
+    avgLoss =
+      (avgLoss * (period - 1) + loss) /
+      period;
+  }
+
+  if (avgLoss === 0) return 100;
+
+  const rs = avgGain / avgLoss;
+
+  return 100 - 100 / (1 + rs);
 }
 
-function candleBody(candle) {
-  return Math.abs(
-    candle.close - candle.open
-  );
-}
-
-function upperWick(candle) {
-  return (
-    candle.high -
-    Math.max(
-      candle.open,
-      candle.close
-    )
-  );
-}
-
-function lowerWick(candle) {
-  return (
-    Math.min(
-      candle.open,
-      candle.close
-    ) - candle.low
-  );
-}
+// ==========================================
+// CANDLE PATTERN
+// ==========================================
 
 function bullishPin(candle) {
-  const body =
-    Math.max(
-      candleBody(candle),
-      1e-12
-    );
+  const body = Math.abs(
+    candle.close - candle.open
+  );
+
+  const lowerWick =
+    Math.min(candle.open, candle.close) -
+    candle.low;
+
+  const upperWick =
+    candle.high -
+    Math.max(candle.open, candle.close);
 
   return (
-    candle.close > candle.open &&
-    lowerWick(candle) >= 1.5 * body &&
-    upperWick(candle) <= 1.5 * body
+    lowerWick > body * 1.5 &&
+    lowerWick > upperWick
   );
 }
 
 function bearishPin(candle) {
-  const body =
-    Math.max(
-      candleBody(candle),
-      1e-12
-    );
+  const body = Math.abs(
+    candle.close - candle.open
+  );
+
+  const upperWick =
+    candle.high -
+    Math.max(candle.open, candle.close);
+
+  const lowerWick =
+    Math.min(candle.open, candle.close) -
+    candle.low;
 
   return (
-    candle.close < candle.open &&
-    upperWick(candle) >= 1.5 * body &&
-    lowerWick(candle) <= 1.5 * body
+    upperWick > body * 1.5 &&
+    upperWick > lowerWick
   );
 }
 
@@ -257,680 +211,409 @@ function bearishEngulf(previous, current) {
   );
 }
 
-/*
-=========================================================
- M5 SIGNAL ENGINE
-=========================================================
+// ==========================================
+// BROKER CLOCK
+// ==========================================
 
-Timeframe       : M5
-EMA             : 50
-RSI             : 14
-RSI BUY area    : >= 40
-RSI SELL area   : <= 60
-Confirmation    : Candle close
-Expiration      : 5 minutes
-Timezone display : UTC+6
+function getLatestClosedCandle(candles, now = new Date()) {
+  const closed = candles.filter((candle) => {
+    const closeTime =
+      candle.time.getTime() + M5_MS;
 
-Signal dibuat dari candle M5 yang sudah CLOSED.
+    return closeTime <= now.getTime();
+  });
 
-Contoh:
+  if (closed.length === 0) {
+    return null;
+  }
 
-Candle:
-07:50 - 07:55
+  return closed[closed.length - 1];
+}
 
-Signal:
-Entry 07:55
+// ==========================================
+// FORMAT BROKER TIME
+// ==========================================
 
-Expiration:
-08:00
-=========================================================
-*/
+function formatBrokerTime(iso) {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: BROKER_TIMEZONE,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).format(new Date(iso));
+}
+
+// ==========================================
+// ANALYZE
+// ==========================================
 
 export function analyze(
   asset,
   candles,
-  minScore = 2
+  minScore = 3
 ) {
+  if (!Array.isArray(candles)) {
+    return null;
+  }
+
   if (candles.length < 220) {
     return null;
   }
 
-  const closes =
-    candles.map(
-      candle => candle.close
-    );
+  const now = new Date();
 
-  const ema50 =
-    ema(closes, 50);
+  // ========================================
+  // PAKAI CANDLE YANG BENAR-BENAR SUDAH CLOSE
+  // ========================================
 
-  const ema200 =
-    ema(closes, 200);
+  const candle =
+    getLatestClosedCandle(candles, now);
 
-  const rsi14 =
-    rsi(closes, 14);
-
-  const index =
-    candles.length - 1;
-
-  const previousIndex =
-    index - 1;
-
-  if (previousIndex < 1) {
+  if (!candle) {
     return null;
   }
 
-  const current =
-    candles[index];
+  const candleIndex =
+    candles.findIndex(
+      (c) =>
+        c.time.getTime() ===
+        candle.time.getTime()
+    );
+
+  if (candleIndex < 200) {
+    return null;
+  }
 
   const previous =
-    candles[previousIndex];
+    candles[candleIndex - 1];
+
+  const closes = candles
+    .slice(0, candleIndex + 1)
+    .map((c) => c.close);
+
+  // ========================================
+  // INDICATORS
+  // ========================================
+
+  const ema50 = ema(closes, 50);
+  const ema200 = ema(closes, 200);
+
+  const previousCloses =
+    closes.slice(0, -1);
+
+  const previousEma50 =
+    ema(previousCloses, 50);
+
+  const currentRsi =
+    rsi(closes, 14);
+
+  const previousRsi =
+    rsi(previousCloses, 14);
+
+  const middle =
+    sma(closes, 20);
+
+  const deviation =
+    stddev(closes, 20);
+
+  const upperBand =
+    middle !== null &&
+    deviation !== null
+      ? middle + deviation * 2
+      : null;
+
+  const lowerBand =
+    middle !== null &&
+    deviation !== null
+      ? middle - deviation * 2
+      : null;
+
+  // ========================================
+  // SCORE
+  // ========================================
+
+  let buyScore = 0;
+  let sellScore = 0;
+
+  const buyReasons = [];
+  const sellReasons = [];
+
+  // EMA 50
+  if (candle.close > ema50) {
+    buyScore++;
+    buyReasons.push("EMA bullish");
+  }
+
+  if (candle.close < ema50) {
+    sellScore++;
+    sellReasons.push("EMA bearish");
+  }
+
+  // EMA direction
+  if (
+    previousEma50 !== null &&
+    ema50 > previousEma50
+  ) {
+    buyScore++;
+    buyReasons.push("EMA50 naik");
+  }
 
   if (
-    !Number.isFinite(ema50[index]) ||
-    !Number.isFinite(ema200[index]) ||
-    !Number.isFinite(rsi14[index])
+    previousEma50 !== null &&
+    ema50 < previousEma50
+  ) {
+    sellScore++;
+    sellReasons.push("EMA50 turun");
+  }
+
+  // EMA200
+  if (candle.close > ema200) {
+    buyScore++;
+    buyReasons.push("Above EMA200");
+  }
+
+  if (candle.close < ema200) {
+    sellScore++;
+    sellReasons.push("Below EMA200");
+  }
+
+  // RSI
+  if (
+    currentRsi !== null &&
+    previousRsi !== null
+  ) {
+    if (
+      currentRsi >= 40 &&
+      currentRsi < 60 &&
+      currentRsi > previousRsi
+    ) {
+      buyScore++;
+      buyReasons.push(
+        `RSI naik ${currentRsi.toFixed(1)}`
+      );
+    }
+
+    if (
+      currentRsi > 40 &&
+      currentRsi <= 60 &&
+      currentRsi < previousRsi
+    ) {
+      sellScore++;
+      sellReasons.push(
+        `RSI turun ${currentRsi.toFixed(1)}`
+      );
+    }
+  }
+
+  // Candle
+  if (
+    candle.close > candle.open
+  ) {
+    buyScore++;
+    buyReasons.push("Candle bullish");
+  }
+
+  if (
+    candle.close < candle.open
+  ) {
+    sellScore++;
+    sellReasons.push("Candle bearish");
+  }
+
+  // Pin / engulfing
+  if (
+    bullishPin(candle) ||
+    bullishEngulf(previous, candle)
+  ) {
+    buyScore++;
+    buyReasons.push("Price action bullish");
+  }
+
+  if (
+    bearishPin(candle) ||
+    bearishEngulf(previous, candle)
+  ) {
+    sellScore++;
+    sellReasons.push("Price action bearish");
+  }
+
+  // Bollinger
+  if (
+    upperBand !== null &&
+    candle.close > middle
+  ) {
+    buyScore++;
+    buyReasons.push("Above BB middle");
+  }
+
+  if (
+    lowerBand !== null &&
+    candle.close < middle
+  ) {
+    sellScore++;
+    sellReasons.push("Below BB middle");
+  }
+
+  // ========================================
+  // TENTUKAN SIGNAL
+  // ========================================
+
+  let direction;
+  let score;
+  let reasons;
+
+  if (
+    buyScore >= minScore &&
+    buyScore > sellScore
+  ) {
+    direction = "CALL";
+    score = buyScore;
+    reasons = buyReasons;
+  } else if (
+    sellScore >= minScore &&
+    sellScore > buyScore
+  ) {
+    direction = "PUT";
+    score = sellScore;
+    reasons = sellReasons;
+  } else {
+    return null;
+  }
+
+  // ========================================
+  // ENTRY = AWAL CANDLE M5 BERIKUTNYA
+  // ========================================
+
+  const entryTime = new Date(
+    candle.time.getTime() + M5_MS
+  );
+
+  const expiryTime = new Date(
+    entryTime.getTime() + M5_MS
+  );
+
+  // ========================================
+  // ANTI STALE SIGNAL
+  // ========================================
+
+  const secondsUntilEntry =
+    (entryTime.getTime() -
+      now.getTime()) /
+    1000;
+
+  /*
+    Entry harus:
+    > sekarang
+    <= 5 menit dari sekarang
+  */
+
+  if (
+    secondsUntilEntry <= 0 ||
+    secondsUntilEntry > 300
   ) {
     return null;
   }
 
-  /*
-  ========================================================
-  BOLLINGER BAND
-  ========================================================
-  */
-
-  const middle =
-    sma(closes, 20, index);
-
-  const deviation =
-    std(
-      closes,
-      20,
-      index,
-      middle
-    );
-
-  const upperBand =
-    middle + 2 * deviation;
-
-  const lowerBand =
-    middle - 2 * deviation;
-
-  /*
-  ========================================================
-  SUPPORT / RESISTANCE
-  ========================================================
-  */
-
-  let support =
-    Infinity;
-
-  let resistance =
-    -Infinity;
-
-  for (
-    let i =
-      Math.max(0, index - 20);
-    i < index;
-    i++
-  ) {
-    support =
-      Math.min(
-        support,
-        candles[i].low
-      );
-
-    resistance =
-      Math.max(
-        resistance,
-        candles[i].high
-      );
-  }
-
-  const range =
-    Math.max(
-      current.high -
-        current.low,
-      1e-12
-    );
-
-  const tolerance =
-    Math.max(
-      range,
-      current.close * 0.0005
-    );
-
-  let bullishScore = 0;
-  let bearishScore = 0;
-
-  const bullishReasons = [];
-  const bearishReasons = [];
-
-  /*
-  ========================================================
-  1. EMA50 / EMA200 TREND
-  ========================================================
-  */
-
-  if (
-    ema50[index] >
-    ema200[index]
-  ) {
-    bullishScore++;
-
-    bullishReasons.push(
-      "EMA bullish"
-    );
-  }
-
-  if (
-    ema50[index] <
-    ema200[index]
-  ) {
-    bearishScore++;
-
-    bearishReasons.push(
-      "EMA bearish"
-    );
-  }
-
-  /*
-  ========================================================
-  2. EMA50 SLOPE
-  ========================================================
-  */
-
-  if (
-    ema50[index] >
-    ema50[previousIndex]
-  ) {
-    bullishScore++;
-
-    bullishReasons.push(
-      "EMA50 naik"
-    );
-  }
-
-  if (
-    ema50[index] <
-    ema50[previousIndex]
-  ) {
-    bearishScore++;
-
-    bearishReasons.push(
-      "EMA50 turun"
-    );
-  }
-
-  /*
-  ========================================================
-  3. PRICE VS EMA50
-  ========================================================
-  */
-
-  if (
-    current.close >
-    ema50[index]
-  ) {
-    bullishScore++;
-
-    bullishReasons.push(
-      "Price above EMA50"
-    );
-  }
-
-  if (
-    current.close <
-    ema50[index]
-  ) {
-    bearishScore++;
-
-    bearishReasons.push(
-      "Price below EMA50"
-    );
-  }
-
-  /*
-  ========================================================
-  4. RSI14 MOMENTUM
-  ========================================================
-  */
-
-  if (
-    rsi14[index] >
-    rsi14[previousIndex]
-  ) {
-    bullishScore++;
-
-    bullishReasons.push(
-      `RSI naik ${rsi14[index].toFixed(1)}`
-    );
-  }
-
-  if (
-    rsi14[index] <
-    rsi14[previousIndex]
-  ) {
-    bearishScore++;
-
-    bearishReasons.push(
-      `RSI turun ${rsi14[index].toFixed(1)}`
-    );
-  }
-
-  /*
-  ========================================================
-  5. RSI AREA 40 / 60
-  ========================================================
-  */
-
-  if (
-    rsi14[index] >= 40 &&
-    rsi14[index] < 60
-  ) {
-    if (
-      rsi14[index] >
-      rsi14[previousIndex]
-    ) {
-      bullishScore++;
-
-      bullishReasons.push(
-        `RSI BUY area ${rsi14[index].toFixed(1)}`
-      );
-    }
-
-    if (
-      rsi14[index] <
-      rsi14[previousIndex]
-    ) {
-      bearishScore++;
-
-      bearishReasons.push(
-        `RSI SELL area ${rsi14[index].toFixed(1)}`
-      );
-    }
-  }
-
-  if (
-    rsi14[index] >= 60 &&
-    rsi14[index] >
-      rsi14[previousIndex]
-  ) {
-    bullishScore++;
-
-    bullishReasons.push(
-      `RSI momentum ${rsi14[index].toFixed(1)}`
-    );
-  }
-
-  if (
-    rsi14[index] <= 40 &&
-    rsi14[index] <
-      rsi14[previousIndex]
-  ) {
-    bearishScore++;
-
-    bearishReasons.push(
-      `RSI momentum ${rsi14[index].toFixed(1)}`
-    );
-  }
-
-  /*
-  ========================================================
-  6. BOLLINGER BAND
-  ========================================================
-  */
-
-  if (
-    current.close <= lowerBand ||
-    current.low <= lowerBand
-  ) {
-    bullishScore++;
-
-    bullishReasons.push(
-      "BB lower"
-    );
-  }
-
-  if (
-    current.close >= upperBand ||
-    current.high >= upperBand
-  ) {
-    bearishScore++;
-
-    bearishReasons.push(
-      "BB upper"
-    );
-  }
-
-  /*
-  ========================================================
-  7. SUPPORT
-  ========================================================
-  */
-
-  if (
-    Math.abs(
-      current.close -
-        support
-    ) <= tolerance ||
-    current.low <=
-      support + tolerance
-  ) {
-    bullishScore++;
-
-    bullishReasons.push(
-      "Support"
-    );
-  }
-
-  /*
-  ========================================================
-  8. RESISTANCE
-  ========================================================
-  */
-
-  if (
-    Math.abs(
-      current.close -
-        resistance
-    ) <= tolerance ||
-    current.high >=
-      resistance - tolerance
-  ) {
-    bearishScore++;
-
-    bearishReasons.push(
-      "Resistance"
-    );
-  }
-
-  /*
-  ========================================================
-  9. PRICE ACTION
-  ========================================================
-  */
-
-  const bullishPA =
-    bullishPin(current) ||
-    bullishEngulf(
-      previous,
-      current
-    );
-
-  const bearishPA =
-    bearishPin(current) ||
-    bearishEngulf(
-      previous,
-      current
-    );
-
-  if (bullishPA) {
-    bullishScore++;
-
-    bullishReasons.push(
-      "Bullish PA"
-    );
-  }
-
-  if (bearishPA) {
-    bearishScore++;
-
-    bearishReasons.push(
-      "Bearish PA"
-    );
-  }
-
-  /*
-  ========================================================
-  10. CANDLE CONFIRMATION
-  ========================================================
-  */
-
-  if (
-    current.close >
-    current.open
-  ) {
-    bullishScore++;
-
-    bullishReasons.push(
-      "Candle bullish"
-    );
-  }
-
-  if (
-    current.close <
-    current.open
-  ) {
-    bearishScore++;
-
-    bearishReasons.push(
-      "Candle bearish"
-    );
-  }
-
-  /*
-  ========================================================
-  FINAL SIGNAL
-  ========================================================
-  */
-
-  if (
-    bullishScore >= minScore &&
-    bullishScore >
-      bearishScore
-  ) {
-    return makeSignal(
-      asset,
-      "CALL",
-      bullishScore,
-      current,
-      bullishReasons
-    );
-  }
-
-  if (
-    bearishScore >= minScore &&
-    bearishScore >
-      bullishScore
-  ) {
-    return makeSignal(
-      asset,
-      "PUT",
-      bearishScore,
-      current,
-      bearishReasons
-    );
-  }
-
-  return null;
-}
-
-/*
-=========================================================
-CREATE M5 SIGNAL
-=========================================================
-
-Candle closed:
-07:50
-
-Entry:
-07:55
-
-Expiration:
-08:00
-=========================================================
-*/
-
-function makeSignal(
-  asset,
-  direction,
-  score,
-  candle,
-  reasons
-) {
-  const entryTime =
-    new Date(
-      candle.time.getTime() +
-        5 * 60 * 1000
-    );
-
-  const expiryTime =
-    new Date(
-      entryTime.getTime() +
-        5 * 60 * 1000
-    );
+  // ========================================
+  // SIGNAL
+  // ========================================
 
   return {
     asset,
-
     direction,
-
     score,
-
     timeframe: "M5",
 
-    signalTime:
-      new Date().toISOString(),
+    signalTime: now.toISOString(),
 
+    // Candle yang menjadi dasar signal
     sourceCandleTime:
       candle.time.toISOString(),
 
+    // Entry broker
     entryTime:
       entryTime.toISOString(),
 
+    // Expiry broker
     expiryTime:
       expiryTime.toISOString(),
 
-    entryPrice:
-      candle.close,
+    entryPrice: candle.close,
 
     expirationMinutes: 5,
+
+    brokerTimezone: "UTC+2",
+
+    brokerEntryTime:
+      formatBrokerTime(
+        entryTime.toISOString()
+      ),
+
+    brokerExpiryTime:
+      formatBrokerTime(
+        expiryTime.toISOString()
+      ),
 
     reasons
   };
 }
 
-export function candleKey(
-  iso
-) {
-  return new Date(iso)
-    .toISOString()
-    .slice(0, 16);
-}
+// ==========================================
+// TELEGRAM FORMAT
+// ==========================================
 
-/*
-=========================================================
-FORMAT TELEGRAM
-UTC+6
-=========================================================
-*/
-
-export function formatSignal(
-  sig
-) {
-  const timeZone =
-    "Etc/GMT-6";
-
-  const formatter =
-    new Intl.DateTimeFormat(
-      "en-GB",
-      {
-        timeZone,
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: false
-      }
-    );
-
-  const entry =
-    formatter.format(
-      new Date(sig.entryTime)
-    );
-
-  const mg1 =
-    new Date(
-      new Date(sig.entryTime)
-        .getTime() +
-        5 * 60 * 1000
-    );
-
-  const mg2 =
-    new Date(
-      new Date(sig.entryTime)
-        .getTime() +
-        10 * 60 * 1000
-    );
-
-  const mg3 =
-    new Date(
-      new Date(sig.entryTime)
-        .getTime() +
-        15 * 60 * 1000
-    );
-
-  const mg1Text =
-    formatter.format(mg1);
-
-  const mg2Text =
-    formatter.format(mg2);
-
-  const mg3Text =
-    formatter.format(mg3);
-
-  const directionEmoji =
-    sig.direction === "CALL"
-      ? "🟩"
-      : "🟥";
-
-  const direction =
-    sig.direction === "CALL"
+export function formatSignal(signal) {
+  const directionText =
+    signal.direction === "CALL"
       ? "BUY"
       : "SELL";
 
+  const directionEmoji =
+    signal.direction === "CALL"
+      ? "🟩"
+      : "🟥";
+
+  const entry =
+    signal.brokerEntryTime;
+
+  const expiry =
+    signal.brokerExpiryTime;
+
+  const mg1 = new Date(
+    new Date(signal.entryTime).getTime() +
+      5 * 60 * 1000
+  );
+
+  const mg2 = new Date(
+    mg1.getTime() +
+      5 * 60 * 1000
+  );
+
+  const mg3 = new Date(
+    mg2.getTime() +
+      5 * 60 * 1000
+  );
+
   return `⚡ SIGNAL
 
-🌐 ${escapeHtml(sig.asset)} 🇺🇸 OTC
+🌐 ${signal.asset} OTC
 Timeframe: M5
 ⏱ Expiration: 5 minutes
-⏰ Entry: ${entry} UTC+6
-${directionEmoji} Direction: ${direction}
+
+⏰ Entry: ${entry} UTC+2
+${directionEmoji} Direction: ${directionText}
 
 📊 Martingale:
-1⃣ ${mg1Text}
-2⃣ ${mg2Text}
-3⃣ ${mg3Text}
+1⃣ ${formatBrokerTime(mg1.toISOString())}
+2⃣ ${formatBrokerTime(mg2.toISOString())}
+3⃣ ${formatBrokerTime(mg3.toISOString())}
 
-📊 Confirmation: ${sig.score}/10
+📊 Confirmation: ${signal.score}/10
 
-${sig.reasons
-  .slice(0, 6)
-  .map(
-    reason =>
-      "🔎 " +
-      escapeHtml(reason)
-  )
+${signal.reasons
+  .map((reason) => `🔎 ${reason}`)
   .join("\n")}
 
-⚠️ Enter exactly at the Entry time.`;
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll(
-      "&",
-      "&amp;"
-    )
-    .replaceAll(
-      "<",
-      "&lt;"
-    )
-    .replaceAll(
-      ">",
-      "&gt;"
-    )
-    .replaceAll(
-      '"',
-      "&quot;"
-    );
+⚠️ ENTER EXACTLY AT ENTRY TIME.`;
 }
