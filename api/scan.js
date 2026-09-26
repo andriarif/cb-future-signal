@@ -7,16 +7,16 @@ import {
 
 
 const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
+ process.env.SUPABASE_URL,
+ process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
 
 const ASSETS = [
-  "EUR/USD",
-  "GBP/USD",
-  "USD/JPY",
-  "AUD/USD"
+ "EUR/USD",
+ "GBP/USD",
+ "USD/JPY",
+ "AUD/USD"
 ];
 
 
@@ -29,58 +29,59 @@ const MIN_SCORE = 2;
 
 
 // ===============================
-// GET M1 OTC CANDLES
+// GET OTC CANDLE
 // ===============================
 
 async function getCandles(asset){
 
 
-  const symbol =
-  asset.replace("/","") + "_otc";
+ const symbol =
+ asset.replace("/","") + "_otc";
 
 
-  const url =
-  `https://otcharts.com/v1/candles`
-  +
-  `?venue=otc`
-  +
-  `&symbol=${symbol}`
-  +
-  `&tf=60`
-  +
-  `&limit=250`;
+ const url =
+ `https://otcharts.com/v1/candles`
+ +
+ `?venue=otc`
+ +
+ `&symbol=${symbol}`
+ +
+ `&tf=60`
+ +
+ `&limit=250`;
 
 
 
-  const response =
-  await fetch(
-    url,
-    {
-      headers:{
-        Authorization:
-        `Bearer ${process.env.OTCHARTS_API_KEY}`
-      }
-    }
+ const response =
+ await fetch(
+  url,
+  {
+   headers:{
+    Authorization:
+    `Bearer ${process.env.OTCHARTS_API_KEY}`
+   }
+  }
+ );
+
+
+
+ if(!response.ok){
+
+  throw new Error(
+   await response.text()
   );
 
-
-  if(!response.ok){
-
-    throw new Error(
-      await response.text()
-    );
-
-  }
+ }
 
 
-  return await response.json();
+ return await response.json();
 
 }
 
 
 
 // ===============================
-// FORMAT WIB
+// WIB
 // ===============================
 
 function formatWIB(date){
@@ -102,7 +103,7 @@ function formatWIB(date){
 
 
 // ===============================
-// ENTRY TIME BUFFER
+// ENTRY BUFFER
 // ===============================
 
 function getEntryTime(){
@@ -112,7 +113,6 @@ function getEntryTime(){
  Date.now();
 
 
- // buffer 30 detik
 
  const target =
  now + 30000;
@@ -140,32 +140,30 @@ function getEntryTime(){
 async function sendTelegram(text){
 
 
- const url =
- `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
-
-
-
  await fetch(
-  url,
-  {
 
-   method:"POST",
+ `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
 
-   headers:{
-    "Content-Type":
-    "application/json"
-   },
+ {
 
-   body:JSON.stringify({
+ method:"POST",
 
-    chat_id:
-    process.env.TELEGRAM_CHAT_ID,
+ headers:{
+  "Content-Type":
+  "application/json"
+ },
 
-    text
+ body:JSON.stringify({
 
-   })
+  chat_id:
+  process.env.TELEGRAM_CHAT_ID,
 
-  }
+  text
+
+ })
+
+ }
+
  );
 
 }
@@ -173,22 +171,10 @@ async function sendTelegram(text){
 
 
 // ===============================
-// MESSAGE
+// SIGNAL MESSAGE
 // ===============================
 
 function signalMessage(sig){
-
-
-const dir =
-sig.direction==="CALL"
-?"BUY"
-:"SELL";
-
-
-const icon =
-sig.direction==="CALL"
-?"🟩"
-:"🟥";
 
 
 return `⚡ SIGNAL
@@ -207,8 +193,7 @@ ${formatWIB(
 )} WIB
 
 
-${icon} Direction:
-${dir}
+${sig.direction==="CALL"?"🟩 BUY":"🟥 SELL"}
 
 
 📊 Confirmation:
@@ -227,278 +212,282 @@ ${sig.reasons
 
 
 // ===============================
-// API HANDLER
+// API
 // ===============================
 
 export default async function handler(
- req,
- res
+req,
+res
 ){
 
 
- const candidates=[];
+const results=[];
 
- const results=[];
+const candidates=[];
 
 
 
- for(
-  const asset of ASSETS
- ){
+// ===============================
+// CEK SIGNAL AKTIF
+// ===============================
 
 
-  try{
+const {
+ data:activeSignals
+}
+=
+await supabase
+.from("signals")
+.select(
+"id,asset,direction,expiry_time"
+)
+.eq(
+"result",
+"PENDING"
+);
 
 
-   const raw =
-   await getCandles(asset);
 
-
-
-   const candles =
-   normalizeCandles(raw);
-
-
-
-   const signal =
-   analyze(
-    asset,
-    candles,
-    MIN_SCORE
-   );
-
-
-
-   if(signal){
-
-
-    candidates.push({
-
-     ...signal,
-
-     asset
-
-    });
-
-
-   }
-   else{
-
-
-    results.push({
-
-     asset,
-
-     status:
-     "NO_SIGNAL"
-
-    });
-
-
-   }
-
-
-
-  }
-  catch(error){
-
-
-   results.push({
-
-    asset,
-
-    status:
-    "ERROR",
-
-    error:
-    error.message
-
-   });
-
-
-  }
-
-
- }
-
-
-
- // ===============================
- // PILIH SCORE TERTINGGI
- // ===============================
-
-
- if(candidates.length){
-
-
-  candidates.sort(
-   (a,b)=>
-   b.score-a.score
-  );
-
-
-
-  const best =
-  candidates[0];
-
-
-
-  const entry =
-  getEntryTime();
-
-
-
-  const expiry =
-  new Date(
-   entry.getTime()
-   +
-   60000
-  );
-
-
-
-  best.entryTime =
-  entry.toISOString();
-
-
-
-  best.expiryTime =
-  expiry.toISOString();
-
-
-
-  const signalKey =
-  `${best.asset}_${best.direction}_${best.entryTime}`;
-
-
-
-  const {
-   data:exist
-  } =
-  await supabase
-  .from("signals")
-  .select("id")
-  .eq(
-   "signal_key",
-   signalKey
-  )
-  .maybeSingle();
-
-
-
-  if(!exist){
-
-
-   await supabase
-   .from("signals")
-   .insert({
-
-    asset:
-    best.asset,
-
-
-    timeframe:
-    "M1",
-
-
-    direction:
-    best.direction,
-
-
-    score:
-    best.score,
-
-
-    signal_key:
-    signalKey,
-
-
-    entry_time:
-    best.entryTime,
-
-
-    expiry_time:
-    best.expiryTime,
-
-
-    entry_price:
-    best.entryPrice,
-
-
-    expiration_minutes:
-    1,
-
-
-    result:
-    "PENDING",
-
-
-    reasons:
-    best.reasons
-
-   });
-
-
-
-   await sendTelegram(
-    signalMessage(best)
-   );
-
-
-
-   results.push({
-
-    asset:
-    best.asset,
-
-
-    status:
-    "SIGNAL_READY",
-
-
-    direction:
-    best.direction,
-
-
-    score:
-    best.score,
-
-
-    entryTime:
-    formatWIB(entry),
-
-
-    expiryTime:
-    formatWIB(expiry)
-
-   });
-
-
-  }
-
- }
-
+if(
+ activeSignals &&
+ activeSignals.length>0
+){
 
  return res.status(200)
- .json({
+.json({
 
-  ok:true,
+ ok:true,
 
-  timeframe:
-  "M1",
+ message:
+ "Masih ada signal aktif, tunggu WIN/LOSS",
 
-  timezone:
-  TIMEZONE,
-
-  expirationMinutes:
-  EXPIRATION_MINUTES,
-
-  minScore:
-  MIN_SCORE,
-
-  results
+ activeSignal:
+ activeSignals
 
  });
+
+}
+
+
+
+// ===============================
+// SCAN MARKET
+// ===============================
+
+
+for(
+const asset of ASSETS
+){
+
+try{
+
+
+const raw =
+await getCandles(asset);
+
+
+
+const candles =
+normalizeCandles(raw);
+
+
+
+const signal =
+analyze(
+asset,
+candles,
+MIN_SCORE
+);
+
+
+
+if(signal){
+
+ candidates.push({
+
+  ...signal,
+
+  asset
+
+ });
+
+}
+else{
+
+results.push({
+
+ asset,
+
+ status:
+ "NO_SIGNAL"
+
+});
+
+}
+
+
+
+}
+catch(error){
+
+results.push({
+
+ asset,
+
+ status:
+ "ERROR",
+
+ error:
+ error.message
+
+});
+
+}
+
+
+}
+
+
+
+// ===============================
+// PILIH SCORE TERTINGGI
+// ===============================
+
+
+if(
+candidates.length>0
+){
+
+
+candidates.sort(
+(a,b)=>
+b.score-a.score
+);
+
+
+
+const best =
+candidates[0];
+
+
+
+const entry =
+getEntryTime();
+
+
+
+const expiry =
+new Date(
+ entry.getTime()
+ +
+ 60000
+);
+
+
+
+const signalKey =
+`${best.asset}_${best.direction}_${entry.toISOString()}`;
+
+
+
+await supabase
+.from("signals")
+.insert({
+
+asset:
+best.asset,
+
+timeframe:
+"M1",
+
+direction:
+best.direction,
+
+score:
+best.score,
+
+signal_key:
+signalKey,
+
+entry_time:
+entry.toISOString(),
+
+expiry_time:
+expiry.toISOString(),
+
+entry_price:
+best.entryPrice,
+
+expiration_minutes:
+1,
+
+result:
+"PENDING",
+
+reasons:
+best.reasons
+
+});
+
+
+
+await sendTelegram(
+signalMessage({
+
+...best,
+
+entryTime:
+entry.toISOString()
+
+})
+);
+
+
+
+results.push({
+
+asset:
+best.asset,
+
+status:
+"SIGNAL_READY",
+
+direction:
+best.direction,
+
+score:
+best.score,
+
+entryTime:
+formatWIB(entry),
+
+expiryTime:
+formatWIB(expiry)
+
+});
+
+
+}
+
+
+
+return res.status(200)
+.json({
+
+ok:true,
+
+timeframe:
+"M1",
+
+timezone:
+TIMEZONE,
+
+expirationMinutes:
+EXPIRATION_MINUTES,
+
+results
+
+});
 
 
 }
