@@ -6,39 +6,11 @@ import {
 } from "../signal-engine.js";
 
 
-const SUPABASE_URL =
-process.env.SUPABASE_URL;
-
-
-const SUPABASE_SERVICE_ROLE_KEY =
-process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-
-const OTCHARTS_API_KEY =
-process.env.OTCHARTS_API_KEY;
-
-
-const TELEGRAM_BOT_TOKEN =
-process.env.TELEGRAM_BOT_TOKEN;
-
-
-const TELEGRAM_CHAT_ID =
-process.env.TELEGRAM_CHAT_ID;
-
-
-
-const MIN_SCORE =
-Number(
- process.env.MIN_SIGNAL_SCORE || 2
+const supabase =
+createClient(
+ process.env.SUPABASE_URL,
+ process.env.SUPABASE_SERVICE_ROLE_KEY
 );
-
-
-const TIMEZONE =
-"Asia/Jakarta";
-
-
-const EXPIRATION_MINUTES = 1;
-
 
 
 const ASSETS = [
@@ -49,75 +21,71 @@ const ASSETS = [
 ];
 
 
-
-const supabase =
-createClient(
- SUPABASE_URL,
- SUPABASE_SERVICE_ROLE_KEY
-);
+const TIMEZONE =
+"Asia/Jakarta";
 
 
+const EXPIRATION_MINUTES = 1;
 
-// ======================================
-// SYMBOL
-// ======================================
 
-function symbolFor(asset){
-
- return `${asset.replace("/", "")}_otc`;
-
-}
+const MIN_SCORE = 2;
 
 
 
-// ======================================
-// GET M1 CANDLES
-// ======================================
+// ===============================
+// GET CANDLES M1
+// ===============================
 
 async function getCandles(asset){
 
+ const symbol =
+ asset.replace("/","");
+
 
  const url =
- `https://otcharts.com/v1/candles`+
- `?venue=otc`+
- `&symbol=${encodeURIComponent(symbolFor(asset))}`+
- `&tf=60`+
+ `https://otcharts.com/v1/candles`
+ +
+ `?venue=otc`
+ +
+ `&symbol=${symbol}`
+ +
+ `&tf=60`
+ +
  `&limit=250`;
 
 
-
- const response =
+ const r =
  await fetch(
   url,
   {
    headers:{
     Authorization:
-    `Bearer ${OTCHARTS_API_KEY}`
+    `Bearer ${process.env.OTCHARTS_API_KEY}`
    }
   }
  );
 
 
- if(!response.ok){
+ if(!r.ok){
 
   throw new Error(
-   await response.text()
+   await r.text()
   );
 
  }
 
 
- return await response.json();
+ return await r.json();
 
 }
 
 
 
-// ======================================
+// ===============================
 // WIB FORMAT
-// ======================================
+// ===============================
 
-function formatWIB(date){
+function wib(date){
 
  return new Intl.DateTimeFormat(
   "id-ID",
@@ -135,23 +103,29 @@ function formatWIB(date){
 
 
 
-// ======================================
-// NEXT M1 ENTRY
-// ======================================
+// ===============================
+// ENTRY TIME BUFFER
+// ===============================
 
-function nextEntryTime(){
+function getEntryTime(){
 
 
  const now =
- new Date();
+ Date.now();
+
+
+
+ // tambah buffer 30 detik
+
+ const target =
+ now + 30000;
+
 
 
  return new Date(
 
   Math.ceil(
-   now.getTime()
-   /
-   60000
+   target / 60000
   )
   *
   60000
@@ -162,105 +136,65 @@ function nextEntryTime(){
 
 
 
-// ======================================
+// ===============================
 // TELEGRAM
-// ======================================
+// ===============================
 
 async function sendTelegram(text){
 
 
- const url =
- `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
-
-
-
- const response =
  await fetch(
-  url,
-  {
-   method:"POST",
 
-   headers:{
-    "Content-Type":
-    "application/json"
-   },
+ `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
 
-   body:JSON.stringify({
+ {
 
-    chat_id:
-    TELEGRAM_CHAT_ID,
+  method:"POST",
 
-    text
-
-   })
-
-  }
- );
+  headers:{
+   "Content-Type":
+   "application/json"
+  },
 
 
- if(!response.ok){
+  body:JSON.stringify({
 
-  throw new Error(
-   await response.text()
-  );
+   chat_id:
+   process.env.TELEGRAM_CHAT_ID,
+
+
+   text
+
+  })
 
  }
+
+ );
 
 }
 
 
 
-// ======================================
-// TELEGRAM FORMAT
-// ======================================
+// ===============================
+// FORMAT SIGNAL
+// ===============================
 
 function formatSignal(sig){
 
 
- const direction =
- sig.direction==="CALL"
- ? "BUY"
- : "SELL";
+const direction =
+sig.direction==="CALL"
+?"BUY"
+:"SELL";
 
 
- const icon =
- sig.direction==="CALL"
- ?"🟩"
- :"🟥";
+const icon =
+sig.direction==="CALL"
+?"🟩"
+:"🟥";
 
 
- const entry =
- new Date(
-  sig.entryTime
- );
-
-
- const mg1 =
- new Date(
-  entry.getTime()
-  +
-  60000
- );
-
-
- const mg2 =
- new Date(
-  mg1.getTime()
-  +
-  60000
- );
-
-
- const mg3 =
- new Date(
-  mg2.getTime()
-  +
-  60000
- );
-
-
-
- return `⚡ SIGNAL
+return `⚡ SIGNAL
 
 
 🌐 ${sig.asset} OTC
@@ -271,18 +205,11 @@ Timeframe: M1
 
 
 ⏰ Entry:
-${formatWIB(entry)} WIB
+${wib(new Date(sig.entryTime))} WIB
 
 
 ${icon} Direction:
 ${direction}
-
-
-📊 Martingale:
-
-1⃣ ${formatWIB(mg1)}
-2⃣ ${formatWIB(mg2)}
-3⃣ ${formatWIB(mg3)}
 
 
 📊 Confirmation:
@@ -294,15 +221,15 @@ ${sig.reasons
 .join("\n")}
 
 
-⚠️ ENTRY SESUAI JAM DI ATAS`;
+⚠️ Entry sesuai jam signal`;
 
 }
 
 
 
-// ======================================
-// MAIN
-// ======================================
+// ===============================
+// API
+// ===============================
 
 export default async function handler(
  req,
@@ -310,12 +237,11 @@ export default async function handler(
 ){
 
 
+ const candidates=[];
+
+
  const results=[];
- const newSignals=[];
 
-
-
- try{
 
 
  for(
@@ -345,7 +271,20 @@ export default async function handler(
 
 
 
-   if(!signal){
+   if(signal){
+
+
+    candidates.push({
+
+     ...signal,
+
+     asset
+
+    });
+
+
+   }
+   else{
 
 
     results.push({
@@ -358,149 +297,133 @@ export default async function handler(
     });
 
 
-    continue;
-
    }
 
 
 
-   const entryTime =
-   nextEntryTime();
+  }
+  catch(e){
+
+
+   results.push({
+
+    asset,
+
+    status:
+    "ERROR",
+
+    error:
+    e.message
+
+   });
+
+
+  }
+
+ }
 
 
 
-   const now =
-   new Date();
+ // ==========================
+ // PILIH SCORE TERTINGGI
+ // ==========================
+
+
+ if(candidates.length>0){
+
+
+  candidates.sort(
+
+   (a,b)=>
+   b.score-a.score
+
+  );
 
 
 
-   const seconds =
-   (
-    entryTime.getTime()
-    -
-    now.getTime()
-   )
-   /
-   1000;
+  const best =
+  candidates[0];
 
 
 
-   // jangan kirim kalau terlalu dekat
-
-   if(seconds < 20){
-
-
-    results.push({
-
-     asset,
-
-     status:
-     "TOO_LATE"
-
-    });
-
-
-    continue;
-
-   }
+  const entry =
+  getEntryTime();
 
 
 
-   signal.entryTime =
-   entryTime.toISOString();
+  const expiry =
+  new Date(
+   entry.getTime()
+   +
+   60000
+  );
 
 
 
-   signal.expiryTime =
-   new Date(
-    entryTime.getTime()
-    +
-    60000
-   )
-   .toISOString();
+  best.entryTime =
+  entry.toISOString();
+
+
+  best.expiryTime =
+  expiry.toISOString();
 
 
 
-   const signalKey =
-   `${asset}|${signal.direction}|${signal.entryTime}`;
+  const key =
+  `${best.asset}-${best.direction}-${best.entryTime}`;
 
 
 
-   const {
-    data:exist
-   } =
-   await supabase
-   .from("signals")
-   .select("id")
-   .eq(
-    "signal_key",
-    signalKey
-   )
-   .maybeSingle();
+  const {data:exist}=
+
+  await supabase
+  .from("signals")
+  .select("id")
+  .eq(
+   "signal_key",
+   key
+  )
+  .maybeSingle();
 
 
 
-   if(exist){
+  if(!exist){
 
 
-    results.push({
-
-     asset,
-
-     status:
-     "DUPLICATE"
-
-    });
-
-
-    continue;
-
-   }
-
-
-
-
-   const {
-    data:inserted,
-    error
-   } =
    await supabase
    .from("signals")
    .insert({
 
-    asset,
+    asset:
+    best.asset,
+
 
     timeframe:
     "M1",
 
 
     direction:
-    signal.direction,
+    best.direction,
 
 
     score:
-    signal.score,
+    best.score,
 
 
     signal_key:
-    signalKey,
-
-
-    signal_time:
-    new Date()
-    .toISOString(),
+    key,
 
 
     entry_time:
-    signal.entryTime,
+    best.entryTime,
 
 
     expiry_time:
-    signal.expiryTime,
+    best.expiryTime,
 
 
     entry_price:
-    signal.entryPrice,
+    best.entryPrice,
 
 
     expiration_minutes:
@@ -512,98 +435,49 @@ export default async function handler(
 
 
     reasons:
-    signal.reasons
+    best.reasons
 
-
-   })
-   .select()
-   .single();
-
-
-
-   if(error)
-   throw error;
-
-
-
-   newSignals.push({
-
-    ...signal,
-
-    id:
-    inserted.id
 
    });
 
 
 
+   await sendTelegram(
+    formatSignal(best)
+   );
+
+
+
    results.push({
 
-    asset,
+    asset:
+    best.asset,
+
 
     status:
     "SIGNAL_READY",
 
 
     direction:
-    signal.direction,
+    best.direction,
 
 
     score:
-    signal.score,
+    best.score,
 
 
     entryTime:
-    formatWIB(entryTime),
+    wib(entry),
 
 
     expiryTime:
-    formatWIB(
-     new Date(
-      signal.expiryTime
-     )
-    )
-
-   });
-
-
-
-  }
-  catch(error){
-
-
-   results.push({
-
-    asset,
-
-    status:
-    "ERROR",
-
-    error:
-    error.message
+    wib(expiry)
 
    });
 
 
   }
 
-
- }
-
-
-
- if(newSignals.length>0){
-
-
-  await sendTelegram(
-
-   newSignals
-   .map(formatSignal)
-   .join(
-    "\n\n==========\n\n"
-   )
-
-  );
 
  }
 
@@ -614,44 +488,21 @@ export default async function handler(
 
   ok:true,
 
+
   timeframe:
   "M1",
+
 
   timezone:
   TIMEZONE,
 
+
   expirationMinutes:
-  EXPIRATION_MINUTES,
-
-
-  minScore:
-  MIN_SCORE,
-
-
-  newSignals:
-  newSignals.length,
+  1,
 
 
   results
 
  });
-
-
- }
- catch(error){
-
-
- return res.status(500)
- .json({
-
-  ok:false,
-
-  error:
-  error.message
-
- });
-
-
- }
 
 }
