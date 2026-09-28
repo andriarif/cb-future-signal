@@ -1,7 +1,5 @@
 // signal-engine.js
-// M1 EMA9 + EMA21 + MACD
-// BUY  = EMA9 > EMA21 + MACD POSITIVE
-// SELL = EMA9 < EMA21 + MACD NEGATIVE
+// M1 EMA50 + RSI14 LOOSE SCALPING
 
 const M1_MS = 60 * 1000;
 
@@ -12,68 +10,77 @@ const M1_MS = 60 * 1000;
 
 export function normalizeCandles(raw){
 
-    let rows = [];
+    let rows=[];
+
 
     if(Array.isArray(raw)){
-        rows = raw;
+        rows=raw;
     }
-    else if(Array.isArray(raw?.candles)){
-        rows = raw.candles;
+    else if(Array.isArray(raw.candles)){
+        rows=raw.candles;
     }
-    else if(Array.isArray(raw?.data)){
-        rows = raw.data;
+    else if(Array.isArray(raw.data)){
+        rows=raw.data;
     }
 
-    return rows.map(c => {
+
+    return rows.map(c=>{
 
         const t =
-            c.time ??
-            c.timestamp ??
-            c.ts;
+        c.time ??
+        c.timestamp ??
+        c.ts;
+
 
         const ms =
-            typeof t === "number"
-            ?
-            (
-                t < 10000000000
-                ?
-                t * 1000
-                :
-                t
-            )
-            :
-            Date.parse(t);
+        typeof t==="number"
+        ?
+        (
+          t < 10000000000
+          ?
+          t*1000
+          :
+          t
+        )
+        :
+        Date.parse(t);
+
+
 
         return {
 
-            time: new Date(ms),
+            time:new Date(ms),
 
-            open: Number(c.open ?? c.o),
+            open:Number(c.open ?? c.o),
 
-            high: Number(c.high ?? c.h),
+            high:Number(c.high ?? c.h),
 
-            low: Number(c.low ?? c.l),
+            low:Number(c.low ?? c.l),
 
-            close: Number(c.close ?? c.c)
+            close:Number(c.close ?? c.c)
 
         };
 
+
     })
-    .filter(c =>
+    .filter(c=>
 
-        Number.isFinite(c.time.getTime()) &&
-
-        Number.isFinite(c.open) &&
-
-        Number.isFinite(c.high) &&
-
-        Number.isFinite(c.low) &&
-
+        Number.isFinite(
+            c.time.getTime()
+        )
+        &&
+        Number.isFinite(c.open)
+        &&
+        Number.isFinite(c.high)
+        &&
+        Number.isFinite(c.low)
+        &&
         Number.isFinite(c.close)
 
     )
     .sort(
-        (a,b) => a.time - b.time
+        (a,b)=>
+        a.time-b.time
     );
 
 }
@@ -84,34 +91,39 @@ export function normalizeCandles(raw){
 // EMA
 // =====================================
 
-function ema(values, period){
+function ema(values,period){
 
     if(values.length < period)
         return null;
 
+
     const k =
-        2 / (period + 1);
+    2/(period+1);
+
 
     let result =
-        values
-            .slice(0, period)
-            .reduce(
-                (a,b) => a + b,
-                0
-            ) / period;
+    values
+    .slice(0,period)
+    .reduce(
+        (a,b)=>a+b,
+        0
+    ) / period;
+
+
 
     for(
-        let i = period;
-        i < values.length;
+        let i=period;
+        i<values.length;
         i++
     ){
 
         result =
-            values[i] * k
-            +
-            result * (1 - k);
+        values[i]*k
+        +
+        result*(1-k);
 
     }
+
 
     return result;
 
@@ -120,164 +132,96 @@ function ema(values, period){
 
 
 // =====================================
-// EMA SERIES
+// RSI
 // =====================================
 
-function emaSeries(values, period){
+function rsi(values,period=14){
 
-    if(values.length < period)
-        return [];
+    if(values.length<=period)
+        return null;
 
-    const k =
-        2 / (period + 1);
 
-    const result = [];
+    let gain=0;
+    let loss=0;
 
-    let current =
-        values
-            .slice(0, period)
-            .reduce(
-                (a,b) => a + b,
-                0
-            ) / period;
 
-    result.push(current);
 
     for(
-        let i = period;
-        i < values.length;
+        let i=1;
+        i<=period;
         i++
     ){
 
-        current =
-            values[i] * k
-            +
-            current * (1 - k);
+        const diff =
+        values[i]-values[i-1];
 
-        result.push(current);
+
+        if(diff>=0)
+            gain+=diff;
+        else
+            loss+=Math.abs(diff);
 
     }
 
-    return result;
-
-}
 
 
-
-// =====================================
-// MACD
-// =====================================
-//
-// MACD = EMA12 - EMA26
-//
-// Signal line = EMA9 of MACD
-//
-// Untuk aturan utama:
-// MACD > 0  = bullish
-// MACD < 0  = bearish
-//
-// =====================================
-
-function macd(values){
-
-    if(values.length < 35)
-        return null;
-
-    const fastEMA =
-        emaSeries(
-            values,
-            12
-        );
-
-    const slowEMA =
-        emaSeries(
-            values,
-            26
-        );
-
-    if(
-        fastEMA.length === 0 ||
-        slowEMA.length === 0
-    ){
-        return null;
-    }
+    let avgGain =
+    gain/period;
 
 
-    // =================================
-    // Samakan posisi EMA12 dan EMA26
-    // =================================
+    let avgLoss =
+    loss/period;
 
-    const offset =
-        fastEMA.length -
-        slowEMA.length;
 
-    const macdValues = [];
 
     for(
-        let i = 0;
-        i < slowEMA.length;
+        let i=period+1;
+        i<values.length;
         i++
     ){
 
-        const fast =
-            fastEMA[i + offset];
-
-        const slow =
-            slowEMA[i];
-
-        macdValues.push(
-            fast - slow
-        );
-
-    }
+        const diff =
+        values[i]-values[i-1];
 
 
-    if(macdValues.length === 0)
-        return null;
+        const g =
+        Math.max(diff,0);
 
 
-    const currentMACD =
-        macdValues[
-            macdValues.length - 1
-        ];
+        const l =
+        Math.max(-diff,0);
 
 
-    // =================================
-    // Signal Line
-    // =================================
 
-    const signalSeries =
-        emaSeries(
-            macdValues,
-            9
-        );
+        avgGain =
+        (
+          avgGain*(period-1)+g
+        )
+        /
+        period;
 
-    let signalLine = null;
 
-    if(signalSeries.length > 0){
 
-        signalLine =
-            signalSeries[
-                signalSeries.length - 1
-            ];
+        avgLoss =
+        (
+          avgLoss*(period-1)+l
+        )
+        /
+        period;
 
     }
 
 
-    return {
 
-        macd: currentMACD,
+    if(avgLoss===0)
+        return 100;
 
-        signal: signalLine,
 
-        histogram:
-            signalLine !== null
-            ?
-            currentMACD - signalLine
-            :
-            null
+    const rs =
+    avgGain/avgLoss;
 
-    };
+
+    return 100-(100/(1+rs));
 
 }
 
@@ -290,160 +234,196 @@ function macd(values){
 export function analyze(
     asset,
     candles,
-    minScore = 2
+    minScore=2
 ){
 
-    // Minimal data untuk EMA26 + MACD
+
     if(candles.length < 60)
         return null;
 
 
+
     const closes =
-        candles.map(
-            c => c.close
-        );
+    candles.map(
+        c=>c.close
+    );
 
 
     const i =
-        candles.length - 1;
+    candles.length-1;
+
 
 
     const candle =
-        candles[i];
+    candles[i];
 
 
-    // =================================
-    // EMA9
-    // =================================
 
-    const ema9 =
-        ema(
-            closes,
-            9
-        );
+    const ema50 =
+    ema(
+        closes,
+        50
+    );
 
 
-    // =================================
-    // EMA21
-    // =================================
-
-    const ema21 =
-        ema(
-            closes,
-            21
-        );
+    const rsi14 =
+    rsi(
+        closes,
+        14
+    );
 
 
-    // =================================
-    // MACD
-    // =================================
 
-    const macdData =
-        macd(
-            closes
-        );
+    const prevRSI =
+    rsi(
+        closes.slice(0,-1),
+        14
+    );
 
 
-    if(
-        ema9 === null ||
-        ema21 === null ||
-        macdData === null
-    ){
 
+    if(!ema50 || !rsi14)
         return null;
 
+
+
+    let buy=0;
+    let sell=0;
+
+
+    let buyReasons=[];
+    let sellReasons=[];
+
+
+
+    // =========================
+    // EMA50
+    // =========================
+
+
+    if(candle.close > ema50){
+
+        buy++;
+
+        buyReasons.push(
+            "Harga di atas EMA50"
+        );
+
     }
 
 
-    const macdValue =
-        macdData.macd;
+    if(candle.close < ema50){
+
+        sell++;
+
+        sellReasons.push(
+            "Harga di bawah EMA50"
+        );
+
+    }
 
 
-    // =================================
-    // BUY
-    // =================================
-    //
-    // EMA9 > EMA21
-    // MACD > 0
-    //
-    // =================================
+
+    // =========================
+    // RSI14
+    // =========================
+
+
+    if(prevRSI){
+
+        if(rsi14 > prevRSI){
+
+            buy++;
+
+            buyReasons.push(
+                `RSI naik ${rsi14.toFixed(1)}`
+            );
+
+        }
+
+
+        if(rsi14 < prevRSI){
+
+            sell++;
+
+            sellReasons.push(
+                `RSI turun ${rsi14.toFixed(1)}`
+            );
+
+        }
+
+    }
+
+
+
+    // =========================
+    // CANDLE CONFIRM
+    // =========================
+
+
+    if(candle.close > candle.open){
+
+        buy++;
+
+        buyReasons.push(
+            "Candle bullish"
+        );
+
+    }
+
+
+
+    if(candle.close < candle.open){
+
+        sell++;
+
+        sellReasons.push(
+            "Candle bearish"
+        );
+
+    }
+
+
+
+
+    // =========================
+    // SIGNAL
+    // =========================
+
 
     if(
-        ema9 > ema21 &&
-        macdValue > 0
+        buy>=2 &&
+        buy>sell
     ){
 
-        const reasons = [
-
-            `EMA9 > EMA21`,
-
-            `MACD +${macdValue.toFixed(6)}`
-
-        ];
-
-
         return makeSignal(
-
             asset,
-
             "CALL",
-
-            2,
-
+            buy,
             candle,
-
-            reasons
-
+            buyReasons
         );
 
     }
 
 
-
-    // =================================
-    // SELL
-    // =================================
-    //
-    // EMA9 < EMA21
-    // MACD < 0
-    //
-    // =================================
 
     if(
-        ema9 < ema21 &&
-        macdValue < 0
+        sell>=2 &&
+        sell>buy
     ){
 
-        const reasons = [
-
-            `EMA9 < EMA21`,
-
-            `MACD ${macdValue.toFixed(6)}`
-
-        ];
-
-
         return makeSignal(
-
             asset,
-
             "PUT",
-
-            2,
-
+            sell,
             candle,
-
-            reasons
-
+            sellReasons
         );
 
     }
 
 
-
-    // =================================
-    // NO SIGNAL
-    // =================================
 
     return null;
 
@@ -463,20 +443,23 @@ function makeSignal(
     reasons
 ){
 
+
     const entry =
-        new Date(
-            candle.time.getTime()
-            +
-            M1_MS
-        );
+    new Date(
+        candle.time.getTime()
+        +
+        M1_MS
+    );
+
 
 
     const expiry =
-        new Date(
-            entry.getTime()
-            +
-            M1_MS
-        );
+    new Date(
+        entry.getTime()
+        +
+        M1_MS
+    );
+
 
 
     return {
@@ -487,21 +470,27 @@ function makeSignal(
 
         score,
 
+
         signalTime:
-            new Date()
-                .toISOString(),
+        new Date()
+        .toISOString(),
+
 
         entryTime:
-            entry.toISOString(),
+        entry.toISOString(),
+
 
         expiryTime:
-            expiry.toISOString(),
+        expiry.toISOString(),
+
 
         entryPrice:
-            candle.close,
+        candle.close,
+
 
         expirationMinutes:
-            1,
+        1,
+
 
         reasons
 
